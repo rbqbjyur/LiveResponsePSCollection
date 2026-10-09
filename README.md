@@ -5,8 +5,15 @@ A single, self-contained PowerShell script for triage collection through
 library, run it on a device, and pull back one zip of timeline-relevant Windows
 artefacts.
 
-It is a lightweight alternative to full triage collectors for when all you
-have is a Live Response session: no agents, binaries or modules are needed.
+It is a **lightweight, best-effort first pass**, for when all you have is a Live
+Response session: no agents, binaries or modules. It uses ordinary file reads
+only, with **no Volume Shadow Copy and no raw disk access**. It copies what
+Windows lets it open and moves on, so locked files and NTFS metafiles are not
+in the zip (see [What it can't collect](#what-it-cant-collect)).
+
+For a comprehensive collection, including locked files and raw NTFS
+artefacts, use a full collector such as KAPE or the Velociraptor Offline
+Collector.
 
 ## Quick start
 
@@ -86,6 +93,7 @@ timeline tooling.
 
 ## What it collects
 
+These are the locations it attempts. Anything locked is skipped (see below).
 `<user>` means every profile folder under `C:\Users` (service profiles under
 `C:\Windows` are not included). Paths are resolved from `%SystemDrive%`, so
 non-`C:` installs work too. Inside the zip, files keep their original path
@@ -93,9 +101,6 @@ non-`C:` installs work too. Inside the zip, files keep their original path
 
 | Category | Artefact | Location |
 |---|---|---|
-| **File system** | `$MFT` | `C:\$MFT` |
-| | `$LogFile` | `C:\$LogFile` |
-| | `$UsnJrnl:$J` | `C:\$Extend\$UsnJrnl:$J` |
 | **Logs** | EVTX | `C:\Windows\System32\winevt\logs\*` |
 | | Firewall Log | `C:\Windows\System32\LogFiles\Firewall\pfirewall*.log` |
 | | SetupAPI | `C:\Windows\INF\setupapi*.log` |
@@ -116,26 +121,32 @@ non-`C:` installs work too. Inside the zip, files keep their original path
 | | Firefox | `<user>\AppData\Roaming\Mozilla\Firefox\Profiles\<profile>\places.sqlite*` |
 | **Crashes** | WER | `*.wer` under `C:\ProgramData\Microsoft\Windows\WER\` and `<user>\AppData\Local\Microsoft\Windows\WER\` |
 
-### NTFS metafiles
+## What it can't collect
 
-PowerShell cannot open `$MFT`, `$LogFile` or `$UsnJrnl:$J`, so they are never
-in the zip; they always show as *Not accessible* in the summary. The script
-prints `getfile` commands for `$MFT` and `$LogFile`, which the Defender sensor
-can retrieve directly. `$UsnJrnl:$J` cannot be retrieved with `getfile` and
-needs raw-NTFS tooling.
+Without VSS or raw disk access, some high-value artefacts cannot be read. They
+appear in the summary as *Not accessible*. Where the Defender sensor can fetch
+them, the script prints a ready-to-paste `getfile` command at the end.
+
+| Artefact | Why | Retrieval |
+|---|---|---|
+| `$MFT` | NTFS metafile | `getfile` (printed) |
+| `$LogFile` | NTFS metafile | `getfile` (printed) |
+| `$UsnJrnl:$J` | NTFS metafile (ADS) | Not possible via `getfile`; needs a raw-NTFS collector |
+| System hives (`SAM`, `SECURITY`, `SOFTWARE`, `SYSTEM`) and their transaction logs | Held exclusively by the kernel while loaded | `getfile` for the hives (printed) |
+| SRUM (`SRUDB.dat`) | Usually held open by the system | `getfile` (printed) |
+| User hives of logged-on users (`NTUSER.DAT`, `UsrClass.dat`) and their transaction logs | Held exclusively while the user is logged on | `getfile` manually (not printed, to keep the list short) |
+
+Hives of users who are not logged on, and most other in-use files (EVTX, a
+running browser's History), are collected normally.
 
 ## Behaviour
 
 - **Requirements:** Windows PowerShell 5.1, run via Live Response (as SYSTEM).
-- **Best effort.** Anything that can't be read is skipped and counted; the run
-  never stops on an error. There is no log file.
-- **Locked files.** Files are opened with shared read access, so most in-use
-  files (EVTX, a running browser's History) are still copied. Files held
-  exclusively are not: on a live system that always includes the loaded system
-  hives and usually SRUM. Machine-wide files that fail this way are listed at
-  the end as `getfile` commands. **Loaded user hives** (`NTUSER.DAT` /
-  `UsrClass.dat` of logged-on users) fail the same way but are not listed, to
-  keep the list short; `getfile` them individually if needed.
+- **Best effort.** Anything that can't be read is skipped and counted in the
+  summary; the run never stops on an error. There is no log file.
+- **Locked files.** Files are opened with shared read access, so in-use files
+  are copied where Windows allows it. Files held exclusively are skipped (see
+  [What it can't collect](#what-it-cant-collect)).
 - **Timestamps.** Zip entries keep only the source file's last-write time. Use
   `$MFT` for full MACB timestamps.
 - **Single pass.** Files are streamed straight into the zip
