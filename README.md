@@ -5,12 +5,20 @@ through **Microsoft Defender for Endpoint (MDE) Live Response**. Upload it to
 the Live Response library, run it on a Windows device, and pull back one zip of
 timeline-relevant forensic artefacts (artifacts) - no binaries to upload.
 
-**The problem it solves:** Live Response's `getfile` retrieves one file at a
-time, with no wildcards or folders. Pulling event logs, Prefetch, registry
-hives, LNK files, JumpLists and browser history for every user means hundreds
-of individual `getfile` commands. This script gathers them into one zip in a
-single `run`, so you need one `getfile` (plus a short, printed list of
-ready-to-paste commands for the few locked files it can't read).
+**The problem it solves:**
+
+- **`getfile` is one file at a time**, with no wildcards or folders. Pulling
+  event logs, Prefetch, registry hives, LNK files, JumpLists and browser
+  history for every user means hundreds of individual `getfile` commands. This
+  script gathers them into one zip in a single `run`, so you need one `getfile`
+  (plus a short, printed list of ready-to-paste commands for the few locked
+  files it can't read).
+- **The built-in investigation package falls short for timelining.** Defender's
+  *Collect investigation package* is a point-in-time snapshot of system state
+  (processes, services, network connections, autoruns), much of it exported as
+  text or CSV rather than raw artefacts. It omits key timeline sources such as
+  registry hives, Amcache, SRUM, LNK files, JumpLists, browser history and most
+  event logs. This script collects those raw, ready for your own parsers.
 
 It is a **lightweight, best-effort first pass**, for when all you have is a Live
 Response session. It uses ordinary file reads only, with **no Volume Shadow
