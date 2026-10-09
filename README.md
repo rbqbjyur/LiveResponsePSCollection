@@ -3,7 +3,14 @@
 A single, self-contained PowerShell script for forensic triage collection
 through **Microsoft Defender for Endpoint (MDE) Live Response**. Upload it to
 the Live Response library, run it on a Windows device, and pull back one zip of
-timeline-relevant forensic artifacts (artefacts) - no binaries to upload.
+timeline-relevant forensic artefacts (artifacts) - no binaries to upload.
+
+**The problem it solves:** Live Response's `getfile` retrieves one file at a
+time, with no wildcards or folders. Pulling event logs, Prefetch, registry
+hives, LNK files, JumpLists and browser history for every user means hundreds
+of individual `getfile` commands. This script gathers them into one zip in a
+single `run`, so you need one `getfile` (plus a short, printed list of
+ready-to-paste commands for the few locked files it can't read).
 
 It is a **lightweight, best-effort first pass**, for when all you have is a Live
 Response session. It uses ordinary file reads only, with **no Volume Shadow
@@ -32,25 +39,19 @@ timeline tooling.
 
 ## Behaviour
 
-- **Requirements:** Windows PowerShell 5.1, run via Live Response (as SYSTEM).
+- **Requirements:** Windows PowerShell 5.1.
 - **Best effort.** Anything that can't be read is skipped and counted in the
   summary; the run never stops on an error. There is no log file.
 - **Locked files.** Files are opened with shared read access, so in-use files
   are copied where Windows allows it. Files held exclusively are skipped (see
   [What it can't collect](#what-it-cant-collect)).
-- **Timestamps.** Zip entries keep only the source file's last-write time. Use
-  `$MFT` for full MACB timestamps.
 - **Single pass.** Files are streamed straight into the zip
   (`System.IO.Compression`, fastest compression) with no temporary copies.
 - **Output location.** `C:\LiveResponse\`, marked Hidden + System to keep it
   out of the user's view. Each run adds a new `<HOSTNAME>_<UTC timestamp>Z.zip`.
-  The folder is queued for deletion at the next reboot; delete it sooner
-  yourself once you have retrieved the zip.
-- **Footprint.** Evidence files are opened read-only. The script writes the
-  output folder and zip to the system volume (new `$MFT`/`$UsnJrnl` records,
-  possible overwrite of unallocated space) and one `PendingFileRenameOperations`
-  value. Running it also leaves the normal traces of PowerShell execution
-  (e.g. script block logging, if enabled). Nothing is downloaded or installed.
+  The folder is queued for deletion at the next reboot.
+- **Footprint.** Writes only the output folder, the zip and one
+  `PendingFileRenameOperations` value; nothing is downloaded or installed.
 
 ## Quick start
 
