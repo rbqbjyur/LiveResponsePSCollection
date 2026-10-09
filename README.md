@@ -15,6 +15,44 @@ For a comprehensive collection, including locked files and raw NTFS
 artefacts, use a full collector such as KAPE or the Velociraptor Offline
 Collector.
 
+## Approach
+
+A deliberately small, timeline-oriented triage set rather than a full sweep:
+
+- **Timeline value first.** Artefacts are chosen for timestamped evidence of
+  execution, file access, persistence, device use, browsing and command-line
+  activity.
+- **Windows-native sources.** Third-party application artefacts are out of
+  scope; mainstream browser history is the exception.
+- **Metadata over payload.** E.g. `$I` records rather than `$R` content, `.wer`
+  reports rather than dumps, keeping the zip practical to pull over Live
+  Response.
+
+Everything is collected raw, for processing with your usual parsers and
+timeline tooling.
+
+## Behaviour
+
+- **Requirements:** Windows PowerShell 5.1, run via Live Response (as SYSTEM).
+- **Best effort.** Anything that can't be read is skipped and counted in the
+  summary; the run never stops on an error. There is no log file.
+- **Locked files.** Files are opened with shared read access, so in-use files
+  are copied where Windows allows it. Files held exclusively are skipped (see
+  [What it can't collect](#what-it-cant-collect)).
+- **Timestamps.** Zip entries keep only the source file's last-write time. Use
+  `$MFT` for full MACB timestamps.
+- **Single pass.** Files are streamed straight into the zip
+  (`System.IO.Compression`, fastest compression) with no temporary copies.
+- **Output location.** `C:\LiveResponse\`, marked Hidden + System to keep it
+  out of the user's view. Each run adds a new `<HOSTNAME>_<UTC timestamp>Z.zip`.
+  The folder is queued for deletion at the next reboot; delete it sooner
+  yourself once you have retrieved the zip.
+- **Footprint.** Evidence files are opened read-only. The script writes the
+  output folder and zip to the system volume (new `$MFT`/`$UsnJrnl` records,
+  possible overwrite of unallocated space) and one `PendingFileRenameOperations`
+  value. Running it also leaves the normal traces of PowerShell execution
+  (e.g. script block logging, if enabled). Nothing is downloaded or installed.
+
 ## Quick start
 
 1. In the Defender portal, upload `collector.ps1` to the Live Response library.
@@ -35,61 +73,6 @@ Collector.
 The script is unsigned. Either enable *Allow unsigned script execution* in the
 Live Response settings for your tenant, or sign it with your own code-signing
 certificate (re-sign after every change).
-
-## Example output
-
-Illustrative only; the counts depend on the host.
-
-```
-Live Response collector v0.13.4
-[01/20] Collecting $LogFile
-...
-[20/20] Collecting WER
-
-Artefact summary:
-  $LogFile                 Not accessible
-  $MFT                     Not accessible
-  $UsnJrnl:$J              Not accessible
-  EVTX                     412 collected
-  Firewall Log             Missing
-  Prefetch                 238 collected
-  Registry Hives (system)  3 collected, 12 not accessible
-  ...
-  SRUM                     Not accessible
-  ...
-  WER                      9 collected
-
-Collected 1874 files total (312.4 MB)
-Retrieve with: getfile "C:\LiveResponse\WS042_20261009_141503Z.zip"
-
-Additional inaccessible artefacts (locked from PowerShell - retrieve directly in this Live Response session):
-getfile "C:\$LogFile"
-getfile "C:\$MFT"
-getfile "C:\Windows\System32\config\SAM"
-getfile "C:\Windows\System32\config\SECURITY"
-getfile "C:\Windows\System32\config\SOFTWARE"
-getfile "C:\Windows\System32\config\SYSTEM"
-getfile "C:\Windows\System32\SRU\SRUDB.dat"
-```
-
-Status meanings: **N collected** (copied into the zip), **Not accessible** (the
-file exists but could not be read), **Missing** (not present on this host).
-
-## Approach
-
-A deliberately small, timeline-oriented triage set rather than a full sweep:
-
-- **Timeline value first.** Artefacts are chosen for timestamped evidence of
-  execution, file access, persistence, device use, browsing and command-line
-  activity.
-- **Windows-native sources.** Third-party application artefacts are out of
-  scope; mainstream browser history is the exception.
-- **Metadata over payload.** E.g. `$I` records rather than `$R` content, `.wer`
-  reports rather than dumps, keeping the zip practical to pull over Live
-  Response.
-
-Everything is collected raw, for processing with your usual parsers and
-timeline tooling.
 
 ## What it collects
 
@@ -139,27 +122,72 @@ them, the script prints a ready-to-paste `getfile` command at the end.
 Hives of users who are not logged on, and most other in-use files (EVTX, a
 running browser's History), are collected normally.
 
-## Behaviour
+## Example output
 
-- **Requirements:** Windows PowerShell 5.1, run via Live Response (as SYSTEM).
-- **Best effort.** Anything that can't be read is skipped and counted in the
-  summary; the run never stops on an error. There is no log file.
-- **Locked files.** Files are opened with shared read access, so in-use files
-  are copied where Windows allows it. Files held exclusively are skipped (see
-  [What it can't collect](#what-it-cant-collect)).
-- **Timestamps.** Zip entries keep only the source file's last-write time. Use
-  `$MFT` for full MACB timestamps.
-- **Single pass.** Files are streamed straight into the zip
-  (`System.IO.Compression`, fastest compression) with no temporary copies.
-- **Output location.** `C:\LiveResponse\`, marked Hidden + System to keep it
-  out of the user's view. Each run adds a new `<HOSTNAME>_<UTC timestamp>Z.zip`.
-  The folder is queued for deletion at the next reboot; delete it sooner
-  yourself once you have retrieved the zip.
-- **Footprint.** Evidence files are opened read-only. The script writes the
-  output folder and zip to the system volume (new `$MFT`/`$UsnJrnl` records,
-  possible overwrite of unallocated space) and one `PendingFileRenameOperations`
-  value. Running it also leaves the normal traces of PowerShell execution
-  (e.g. script block logging, if enabled). Nothing is downloaded or installed.
+Illustrative run on a host with three profiles (`Default`, plus two users, one
+of them logged on); counts depend on the host.
+
+```
+Live Response collector v0.13.4
+[01/20] Collecting $LogFile
+[02/20] Collecting $MFT
+[03/20] Collecting $UsnJrnl:$J
+[04/20] Collecting EVTX
+[05/20] Collecting Prefetch
+[06/20] Collecting SetupAPI
+[07/20] Collecting Firewall Log
+[08/20] Collecting SRUM
+[09/20] Collecting Registry Hives (system)
+[10/20] Collecting Scheduled Tasks
+[11/20] Collecting Recycle Bin ($I)
+[12/20] Collecting Startup Folders
+[13/20] Collecting WER
+[14/20] Collecting LNK
+[15/20] Collecting JumpLists
+[16/20] Collecting Registry Hives (user)
+[17/20] Collecting File History
+[18/20] Collecting Browser History
+[19/20] Collecting PowerShell History
+[20/20] Collecting PowerShell Transcripts
+
+Artefact summary:
+  $LogFile                 Not accessible
+  $MFT                     Not accessible
+  $UsnJrnl:$J              Not accessible
+  EVTX                     412 collected
+  Firewall Log             Missing
+  Prefetch                 238 collected
+  Registry Hives (system)  3 collected, 12 not accessible
+  Scheduled Tasks          187 collected
+  SetupAPI                 3 collected
+  SRUM                     Not accessible
+  Browser History          3 collected
+  File History             Missing
+  JumpLists                42 collected
+  LNK                      118 collected
+  PowerShell History       2 collected
+  PowerShell Transcripts   Missing
+  Recycle Bin ($I)         7 collected
+  Registry Hives (user)    9 collected, 6 not accessible
+  Startup Folders          2 collected
+  WER                      9 collected
+
+Collected 1040 files total (96.41 MB)
+Retrieve with: getfile "C:\LiveResponse\WS042_20261009_141503Z.zip"
+
+Additional inaccessible artefacts (locked from PowerShell - retrieve directly in this Live Response session):
+getfile "C:\$LogFile"
+getfile "C:\$MFT"
+getfile "C:\Windows\System32\config\SAM"
+getfile "C:\Windows\System32\config\SECURITY"
+getfile "C:\Windows\System32\config\SOFTWARE"
+getfile "C:\Windows\System32\config\SYSTEM"
+getfile "C:\Windows\System32\SRU\SRUDB.dat"
+```
+
+Status meanings: **N collected** (copied into the zip), **Not accessible** (the
+file exists but could not be read), **Missing** (not present on this host).
+Browser History counts browser profiles, not files.
 
 ## License
 
