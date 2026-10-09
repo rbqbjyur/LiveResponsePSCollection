@@ -1,15 +1,14 @@
-# Live Response collector
+# MDE Live Response Triage Collector
 
-A single, self-contained PowerShell script for triage collection through
-**Microsoft Defender for Endpoint Live Response**. Upload it to the Live Response
-library, run it on a device, and pull back one zip of timeline-relevant Windows
-artefacts.
+A single, self-contained PowerShell script for forensic triage collection
+through **Microsoft Defender for Endpoint (MDE) Live Response**. Upload it to
+the Live Response library, run it on a Windows device, and pull back one zip of
+timeline-relevant forensic artifacts (artefacts) - no binaries to upload.
 
 It is a **lightweight, best-effort first pass**, for when all you have is a Live
-Response session: no agents, binaries or modules. It uses ordinary file reads
-only, with **no Volume Shadow Copy and no raw disk access**. It copies what
-Windows lets it open and moves on, so locked files and NTFS metafiles are not
-in the zip (see [What it can't collect](#what-it-cant-collect)).
+Response session. It uses ordinary file reads only, with **no Volume Shadow
+Copy and no raw disk access**. It copies what Windows lets it open and moves
+on, so locked files and NTFS metafiles are not in the zip (see [What it can't collect](#what-it-cant-collect)).
 
 For a comprehensive collection, including locked files and raw NTFS
 artefacts, use a full collector such as KAPE or the Velociraptor Offline
