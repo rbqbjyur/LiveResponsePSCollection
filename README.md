@@ -124,7 +124,7 @@ them, the script prints a ready-to-paste `getfile` command at the end.
 | `$LogFile` | NTFS metafile | `getfile` (printed) |
 | `$UsnJrnl:$J` | NTFS metafile (ADS) | Not possible via `getfile`; needs a raw-NTFS collector |
 | System hives (`SAM`, `SECURITY`, `SOFTWARE`, `SYSTEM`) and their transaction logs | Held exclusively by the kernel while loaded | `getfile` for the hives (printed) |
-| SRUM (`SRUDB.dat`) | Usually held open by the system | `getfile` (printed) |
+| SRUM (`SRUDB.dat`) | Often held open by the system (collected when it isn't) | `getfile` (printed) |
 | User hives of logged-on users (`NTUSER.DAT`, `UsrClass.dat`) and their transaction logs | Held exclusively while the user is logged on | `getfile` manually (not printed, to keep the list short) |
 
 Hives of users who are not logged on, and most other in-use files (EVTX, a
@@ -132,56 +132,58 @@ running browser's History), are collected normally.
 
 ## Example output
 
-Illustrative run on a host with three profiles (`Default`, plus two users, one
-of them logged on); counts depend on the host.
+A Live Response run on a workstation with one logged-on user (plus the
+`Default` profile); counts depend on the host.
 
 ```
-Live Response collector v0.13.4
+C:\> run collector.ps1
+Live Response collector v0.14.0
+Host WS042, started 2026-10-10T10:52:53Z
 [01/20] Collecting $LogFile
 [02/20] Collecting $MFT
 [03/20] Collecting $UsnJrnl:$J
 [04/20] Collecting EVTX
-[05/20] Collecting Prefetch
-[06/20] Collecting SetupAPI
-[07/20] Collecting Firewall Log
-[08/20] Collecting SRUM
-[09/20] Collecting Registry Hives (system)
-[10/20] Collecting Scheduled Tasks
-[11/20] Collecting Recycle Bin ($I)
-[12/20] Collecting Startup Folders
-[13/20] Collecting WER
+[05/20] Collecting Firewall Log
+[06/20] Collecting Prefetch
+[07/20] Collecting Registry Hives (system)
+[08/20] Collecting Scheduled Tasks
+[09/20] Collecting SetupAPI
+[10/20] Collecting SRUM
+[11/20] Collecting Browser History
+[12/20] Collecting File History
+[13/20] Collecting JumpLists
 [14/20] Collecting LNK
-[15/20] Collecting JumpLists
-[16/20] Collecting Registry Hives (user)
-[17/20] Collecting File History
-[18/20] Collecting Browser History
-[19/20] Collecting PowerShell History
-[20/20] Collecting PowerShell Transcripts
+[15/20] Collecting PowerShell History
+[16/20] Collecting PowerShell Transcripts
+[17/20] Collecting Recycle Bin ($I)
+[18/20] Collecting Registry Hives (user)
+[19/20] Collecting Startup Folders
+[20/20] Collecting WER
 
 Artefact summary:
   $LogFile                 Not accessible
   $MFT                     Not accessible
   $UsnJrnl:$J              Not accessible
-  EVTX                     412 collected
+  EVTX                     438 collected
   Firewall Log             Missing
-  Prefetch                 238 collected
+  Prefetch                 448 collected
   Registry Hives (system)  3 collected, 12 not accessible
-  Scheduled Tasks          187 collected
-  SetupAPI                 3 collected
-  SRUM                     Not accessible
-  Browser History          3 collected
+  Scheduled Tasks          263 collected
+  SetupAPI                 10 collected
+  SRUM                     1 collected
+  Browser History          1 collected
   File History             Missing
   JumpLists                42 collected
-  LNK                      118 collected
-  PowerShell History       2 collected
+  LNK                      63 collected
+  PowerShell History       1 collected
   PowerShell Transcripts   Missing
-  Recycle Bin ($I)         7 collected
-  Registry Hives (user)    9 collected, 6 not accessible
-  Startup Folders          2 collected
-  WER                      9 collected
+  Recycle Bin ($I)         9 collected
+  Registry Hives (user)    3 collected, 6 not accessible
+  Startup Folders          3 collected
+  WER                      218 collected
 
-Collected 1040 files total (96.41 MB)
-Retrieve with: getfile "C:\LiveResponse\WS042_20261009_141503Z.zip"
+Collected 1504 files total (55.31 MB)
+Retrieve with: getfile "C:\LiveResponse\WS042_20261010_105253Z.zip"
 
 Additional inaccessible artefacts (locked from PowerShell - retrieve directly in this Live Response session):
 getfile "C:\$LogFile"
@@ -190,7 +192,6 @@ getfile "C:\Windows\System32\config\SAM"
 getfile "C:\Windows\System32\config\SECURITY"
 getfile "C:\Windows\System32\config\SOFTWARE"
 getfile "C:\Windows\System32\config\SYSTEM"
-getfile "C:\Windows\System32\SRU\SRUDB.dat"
 ```
 
 Status meanings: **N collected** (copied into the zip), **Not accessible** (the
