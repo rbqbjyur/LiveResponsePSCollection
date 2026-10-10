@@ -199,5 +199,6 @@ Browser History counts browser profiles, not files.
 
 ## License
 
-[MIT](LICENSE). Provided as is, with no warranty. Test it in your environment
-before relying on it in an investigation.
+[0BSD](LICENSE) (Zero-Clause BSD): use it for anything, no attribution
+required. Provided as is, with no warranty. Test it in your environment before
+relying on it in an investigation.
