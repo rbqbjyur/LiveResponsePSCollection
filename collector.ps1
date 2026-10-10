@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: 0BSD
 #Requires -Version 5.1
 <#
     Live Response collector.
@@ -62,11 +63,15 @@
                value and broader than KAPE.
       0.13.4 - Metafile getfile follow-ups ($MFT/$LogFile) are now outcome-based:
                printed only if the read actually failed, not unconditionally.
+      0.13.5 - Fix delete-on-reboot cleanup: pass a true null destination to
+               MoveFileEx ([NullString]::Value; $null was passed as "", so the
+               output folder was never deleted on reboot - confirmed in testing).
+               Added SPDX identifier (0BSD).
 #>
 
 # ============================== CONFIG ==============================
 
-$CollectorVersion = '0.13.4'
+$CollectorVersion = '0.13.5'
 
 $ErrorActionPreference = 'SilentlyContinue'
 $ProgressPreference    = 'SilentlyContinue'
@@ -248,12 +253,14 @@ function Register-DeleteOnReboot {
     try {
         # Files first, then directories deepest-first, then the root: the queue is
         # processed in order, and a directory is only removed once it is empty.
+        # [NullString]::Value, not $null: PowerShell turns $null into "" for a
+        # .NET string argument, and MoveFileEx only queues a delete for a true null.
         Get-ChildItem -LiteralPath $Root -Recurse -Force -File -ErrorAction SilentlyContinue |
-            ForEach-Object { [LR.Native]::MoveFileEx($_.FullName, $null, 4) | Out-Null }
+            ForEach-Object { [LR.Native]::MoveFileEx($_.FullName, [NullString]::Value, 4) | Out-Null }
         Get-ChildItem -LiteralPath $Root -Recurse -Force -Directory -ErrorAction SilentlyContinue |
             Sort-Object { $_.FullName.Length } -Descending |
-            ForEach-Object { [LR.Native]::MoveFileEx($_.FullName, $null, 4) | Out-Null }
-        [LR.Native]::MoveFileEx($Root, $null, 4) | Out-Null
+            ForEach-Object { [LR.Native]::MoveFileEx($_.FullName, [NullString]::Value, 4) | Out-Null }
+        [LR.Native]::MoveFileEx($Root, [NullString]::Value, 4) | Out-Null
     } catch {}
 }
 
