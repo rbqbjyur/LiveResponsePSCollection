@@ -2,9 +2,19 @@
 
 Notable changes to `collector.ps1`. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
-[Semantic Versioning](https://semver.org/spec/v2.0.0.html). Pre-1.0: a minor
-version adds an artefact or changes behaviour; a patch is a fix or an
-output-only change. Dates are UTC.
+[Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## 0.15.0 - 2026-10-10
+
+### Added
+- PowerShell transcripts from OneDrive-redirected Documents (Known Folder
+  Move), from dated subfolders (policy transcription), and from a Group Policy
+  transcription `OutputDirectory` on a local drive (Windows PowerShell and
+  PowerShell 7).
+
+### Changed
+- User profiles are enumerated under the ProfileList `ProfilesDirectory`
+  (falls back to `<SystemDrive>\Users`).
 
 ## 0.14.0 - 2026-10-10
 
@@ -35,8 +45,6 @@ First version in this repository.
   actually failed.
 
 ## 0.1.0 - 0.13.3 (before the repository, undated)
-
-Version numbers were assigned retroactively.
 
 - **0.13.3** - Changed: user profiles are the folders under `\Users`; service
   profiles under `\Windows` are excluded.

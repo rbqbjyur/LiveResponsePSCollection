@@ -19,7 +19,7 @@ param()
 
 # ============================== CONFIG ==============================
 
-$CollectorVersion = '0.14.0'
+$CollectorVersion = '0.15.0'
 
 $ErrorActionPreference = 'SilentlyContinue'
 $ProgressPreference    = 'SilentlyContinue'
@@ -38,6 +38,9 @@ $timestamp = $runStart.ToString('yyyyMMdd_HHmmss') + 'Z'
 $outDir  = Join-Path $sysDrive 'LiveResponse'
 $zipPath = Join-Path $outDir "${hostName}_${timestamp}.zip"
 
+# Where Windows keeps user profiles (ProfilesDirectory, normally %SystemDrive%\Users).
+$profileListKey = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList'
+
 # Artefacts to collect: one row per summary line. Add an artefact by adding a row.
 #   Name     Summary label.
 #   Group    1 = drive root (NTFS metafiles), 2 = other system files, 3 = user-specific.
@@ -51,6 +54,8 @@ $zipPath = Join-Path $outDir "${hostName}_${timestamp}.zip"
 #            command is printed at the end if the read failed.
 #   CountBy  'Folder' counts one unit per folder holding matches (e.g. per browser
 #            profile) instead of one per file.
+#   RegDirs  Folders named by registry values (Key, Value), each searched with its
+#            Pattern. Local drive paths only: shares are skipped (no network access).
 # Pattern syntax: see Resolve-PathPattern. Collection, progress and summary all
 # run in Group order, then by Name alphabetically ignoring non-alphanumerics (e.g.
 # the leading '$'). That order is applied at run time, so a row's position in
@@ -90,7 +95,20 @@ $artefacts = @(
     @{ Name = 'JumpLists';              Group = 3; User = 'AppData\Roaming\Microsoft\Windows\Recent\AutomaticDestinations\*.automaticDestinations-ms' }
     @{ Name = 'LNK';                    Group = 3; User = 'AppData\Roaming\Microsoft\Windows\Recent\*.lnk' }
     @{ Name = 'PowerShell History';     Group = 3; User = 'AppData\Roaming\Microsoft\Windows\PowerShell\PSReadline\ConsoleHost_history.txt' }
-    @{ Name = 'PowerShell Transcripts'; Group = 3; User = 'Documents\PowerShell_transcript.*.txt' }
+    # Transcripts go to the user's Documents - possibly moved into OneDrive (Known
+    # Folder Move) - directly or, with policy transcription, in date subfolders.
+    # Policy can also redirect them to a central folder (Windows PowerShell and PS 7).
+    @{ Name = 'PowerShell Transcripts'; Group = 3
+       User = @(
+           'Documents\PowerShell_transcript.*.txt'
+           'Documents\*\PowerShell_transcript.*.txt'
+           'OneDrive*\Documents\PowerShell_transcript.*.txt'
+           'OneDrive*\Documents\*\PowerShell_transcript.*.txt'
+       )
+       RegDirs = @(
+           @{ Key = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\Transcription'; Value = 'OutputDirectory'; Pattern = '**\PowerShell_transcript.*.txt' }
+           @{ Key = 'HKLM:\SOFTWARE\Policies\Microsoft\PowerShellCore\Transcription';     Value = 'OutputDirectory'; Pattern = '**\PowerShell_transcript.*.txt' }
+       ) }
     @{ Name = 'Recycle Bin ($I)';       Group = 3; System = '$Recycle.Bin\*\$I*' }   # $I metadata only, no $R content
     @{ Name = 'Registry Hives (user)';  Group = 3; Logs = $true; User = @(
         'NTUSER.DAT'
@@ -147,10 +165,25 @@ function Resolve-PathPattern {
     }
 }
 
-# User profiles: the folders under <sysDrive>\Users. Service/system accounts live
-# under \Windows and so are intentionally excluded.
+# --- Registry ---
+
+# A registry value with environment variables expanded, or $null if the key or
+# value is absent or unreadable.
+function Get-RegistryValue {
+    param([string]$Path, [string]$Name)
+    try {
+        $value = (Get-ItemProperty -LiteralPath $Path -Name $Name -ErrorAction Stop).$Name
+        if ($value) { [Environment]::ExpandEnvironmentVariables($value) }
+    } catch {}
+}
+
+# User profiles: the folders under the profiles directory (from ProfileList, else
+# <sysDrive>\Users). Service/system accounts live under \Windows and so are
+# intentionally excluded.
 function Get-UserProfilePath {
-    Get-ChildDirectory -Path (Join-Path $sysDrive 'Users')
+    $root = Get-RegistryValue -Path $profileListKey -Name 'ProfilesDirectory'
+    if (-not $root) { $root = Join-Path $sysDrive 'Users' }
+    Get-ChildDirectory -Path $root
 }
 
 # --- Zip ---
@@ -216,6 +249,11 @@ function Add-Artefact {
 
     $sources = @()
     foreach ($p in $Artefact.System) { $sources += @{ Root = $sysDrive; Scope = 'System'; Pattern = $p } }
+    foreach ($rd in $Artefact.RegDirs) {
+        $dir = Get-RegistryValue -Path $rd.Key -Name $rd.Value
+        # Local drive paths only (e.g. D:\Transcripts): skips shares and relative paths.
+        if ($dir -match '^[A-Za-z]:\\') { $sources += @{ Root = $dir; Scope = 'System'; Pattern = $rd.Pattern } }
+    }
     foreach ($u in $UserProfile) {
         foreach ($p in $Artefact.User) { $sources += @{ Root = $u; Scope = 'User'; Pattern = $p } }
     }

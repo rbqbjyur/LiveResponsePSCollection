@@ -58,8 +58,11 @@ timeline tooling.
 - **Output location.** `C:\LiveResponse\`, marked Hidden + System to keep it
   out of the user's view. Each run adds a new `<HOSTNAME>_<UTC timestamp>Z.zip`.
   The folder is queued for deletion at the next reboot.
-- **Footprint.** Writes only the output folder, the zip and one
+- **Footprint.** Writes the output folder, the zip and one
   `PendingFileRenameOperations` value; nothing is downloaded or installed.
+  Queuing the deletion compiles a small helper (`Add-Type`), so `csc.exe`
+  runs: expect transient files in `%TEMP%` and Prefetch/Amcache entries for
+  `csc.exe` (and usually `cvtres.exe`).
 
 ## Quick start
 
@@ -85,8 +88,8 @@ certificate (re-sign after every change).
 ## What it collects
 
 These are the locations it attempts. Anything locked is skipped (see below).
-`<user>` means every profile folder under `C:\Users` (service profiles under
-`C:\Windows` are not included). Paths are resolved from `%SystemDrive%`, so
+`<user>` means every folder in the profiles directory, normally `C:\Users`
+(service profiles under `C:\Windows` are not included). Paths are resolved from `%SystemDrive%`, so
 non-`C:` installs work too. Inside the zip, files keep their original path
 (e.g. `C/Windows/Prefetch/...`).
 
@@ -98,7 +101,7 @@ non-`C:` installs work too. Inside the zip, files keep their original path
 | **Execution** | Prefetch | `C:\Windows\Prefetch\*.pf` |
 | | SRUM | `C:\Windows\System32\SRU\SRUDB.dat` |
 | | PowerShell History | `<user>\AppData\Roaming\Microsoft\Windows\PowerShell\PSReadline\ConsoleHost_history.txt` |
-| | PowerShell Transcripts | `<user>\Documents\PowerShell_transcript.*.txt` |
+| | PowerShell Transcripts | `PowerShell_transcript.*.txt` in `<user>\Documents\` and `<user>\OneDrive*\Documents\` (and their dated subfolders); a policy transcription folder on a local drive (recursive) |
 | **Registry** | System hives | `SAM`, `SECURITY`, `SOFTWARE`, `SYSTEM` in `C:\Windows\System32\config\`; `C:\Windows\AppCompat\Programs\Amcache.hve` |
 | | User hives | `<user>\NTUSER.DAT`, `<user>\AppData\Local\Microsoft\Windows\UsrClass.dat` |
 | | Transaction logs | `.LOG1`/`.LOG2` alongside each hive above |
@@ -137,7 +140,7 @@ A Live Response run on a workstation with one logged-on user (plus the
 
 ```
 C:\> run collector.ps1
-Live Response collector v0.14.0
+Live Response collector v0.15.0
 Host WS042, started 2026-10-10T10:52:53Z
 [01/20] Collecting $LogFile
 [02/20] Collecting $MFT
