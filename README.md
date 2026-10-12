@@ -89,7 +89,7 @@ timeline tooling.
 
 The script is unsigned. Either enable *Allow unsigned script execution* in the
 Live Response settings for your tenant, or sign it with your own code-signing
-certificate (re-sign after every change).
+certificate.
 
 ## What it collects
 
@@ -151,8 +151,7 @@ list (transaction logs excepted).
 
 ## Example output
 
-A Live Response run on a workstation (hostname changed); counts depend on the
-host.
+A Live Response run on a workstation; counts depend on the host.
 
 ```
 C:\> run collector.ps1
