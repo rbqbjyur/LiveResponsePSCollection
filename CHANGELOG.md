@@ -4,6 +4,25 @@ Notable changes to `collector.ps1`. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 1.1.0 - 2026-10-12
+
+### Added
+- OS name and release printed after the banner.
+- Summary column marking Missing or Not accessible statuses that are normal for
+  the host (e.g. Prefetch on servers, legacy-only artefacts, live hives) as
+  `(not unusual)`, so unusual gaps stand out.
+
+### Changed
+- Amcache, AppCompat PCA and Syscache merged into one "Application
+  Compatibility" line (Syscache and RecentFileCache are Amcache's pre-Windows 8
+  predecessors).
+- The zip is now written under the Defender for Endpoint
+  sensor's Temp folder,
+  `ProgramData\Microsoft\Windows Defender Advanced Threat Protection\Temp\Collections\`,
+  falling back to a `LiveResponseCollector` folder in `Windows\SystemTemp` or
+  the account's temp folder, instead of `%SystemDrive%\LiveResponse\`. The
+  printed `getfile` path changes accordingly.
+
 ## 1.0.1 - 2026-10-12
 
 ### Fixed

@@ -60,23 +60,31 @@ timeline tooling.
 - **Requirements:** Windows PowerShell 5.1.
 - **Best effort.** Anything that can't be read is skipped and counted in the
   summary; the run never stops on an error, except a full system drive: it
-  stops, deletes the partial zip and asks you to free space and re-run. There is
-  no log file.
+  stops, deletes the partial zip and asks you to free space and re-run.
 - **Locked files.** Files are opened with shared read access, so in-use files
   are copied where Windows allows it. Files held exclusively are skipped (see
   [What it can't collect](#what-it-cant-collect)).
 - **Single pass.** Files are streamed straight into the zip
   (`System.IO.Compression`, fastest compression) with no temporary copies.
   Zip entry times are each file's last-write time in UTC.
-- **Output location.** `%SystemDrive%\LiveResponse\` (normally `C:\`), marked
-  Hidden + System to keep it out of the user's view. Each run adds a new
-  `<HOSTNAME>_<UTC timestamp>Z.zip`. The folder is queued for deletion at the
-  next reboot.
+- **Output location.** A `Collections` folder under the Defender for Endpoint
+  sensor's own Temp folder,
+  `%SystemDrive%\ProgramData\Microsoft\Windows Defender Advanced Threat Protection\Temp\Collections\`,
+  where Live Response also keeps its script transcripts. If that can't be
+  written, it falls back to a `LiveResponseCollector` folder in
+  `%SystemRoot%\SystemTemp\` (newer Windows; SYSTEM and Administrators only),
+  then in the running account's temp folder (`C:\Windows\Temp\` for SYSTEM).
+  Only that last folder is ever created. Each run adds a new
+  `<HOSTNAME>_<UTC timestamp>Z.zip`, and the folder is queued for deletion at
+  the next reboot.
 - **Footprint.** Writes the output folder, the zip and one
   `PendingFileRenameOperations` value; nothing is downloaded or installed.
   Queuing the deletion compiles a small helper (`Add-Type`), so `csc.exe`
   runs: expect transient files in `%TEMP%` and Prefetch/Amcache entries for
   `csc.exe` (and usually `cvtres.exe`).
+- **Live Response limits.** `getfile` retrieves up to 3 GB per file, and slow
+  links can time out first; `run` commands time out after 30 minutes. The
+  script doesn't split the zip or stop itself early.
 
 ## Quick start
 
@@ -91,7 +99,7 @@ timeline tooling.
 3. When it finishes, it prints the zip's path. Retrieve it with the command it
    gives you:
    ```
-   getfile "C:\LiveResponse\<HOSTNAME>_<yyyyMMdd_HHmmss>Z.zip"
+   getfile "C:\ProgramData\Microsoft\Windows Defender Advanced Threat Protection\Temp\Collections\<HOSTNAME>_<yyyyMMdd_HHmmss>Z.zip"
    ```
 4. If it lists **Additional inaccessible artefacts**, those are files PowerShell
    could not open (e.g. `$MFT`, `$LogFile`, locked hives). Copy and paste the
@@ -123,8 +131,7 @@ NTFS metafiles that open the summary are covered under
 
 | Artefact | Location |
 |---|---|
-| Amcache | `C:\Windows\AppCompat\Programs\Amcache.hve`<br>`C:\Windows\AppCompat\Programs\RecentFileCache.bcf` (Windows 7)<br>`C:\Windows.old\Windows\AppCompat\Programs\{Amcache.hve,RecentFileCache.bcf}`<br>hives with their `.LOG1`/`.LOG2` |
-| AppCompat PCA | `C:\Windows\appcompat\pca\*` |
+| Application Compatibility | `C:\Windows\AppCompat\Programs\Amcache.hve`<br>`C:\Windows\appcompat\pca\*` (Windows 11 22H2+)<br>`C:\Windows\AppCompat\Programs\RecentFileCache.bcf` (Windows 7)<br>`C:\System Volume Information\Syscache.hve` (Windows 7 / Server 2008 R2)<br>`C:\Windows.old\Windows\AppCompat\Programs\{Amcache.hve,RecentFileCache.bcf}`<br>hives with their `.LOG1`/`.LOG2` |
 | BITS | `C:\ProgramData\Microsoft\Network\Downloader\` (recursive) |
 | Defender Logs | `C:\ProgramData\Microsoft\Windows Defender\Support\` (recursive)<br>`C:\ProgramData\Microsoft\Windows Defender\Scans\History\Service\DetectionHistory\` (recursive)<br>`C:\ProgramData\Microsoft\Windows Defender\Scans\History\Service\Detections.log`<br>`C:\Windows\Temp\MpCmdRun.log`<br>`C:\ProgramData\Microsoft\Microsoft AntiMalware\Support\` (recursive; older Defender / SCEP)<br>`C:\Windows.old\Windows\Temp\MpCmdRun.log` |
 | Event Logs | `C:\Windows\System32\winevt\logs\*.evtx`<br>`C:\Windows\System32\config\*.evt` (XP)<br>`C:\Windows.old\Windows\System32\winevt\logs\*.evtx` |
@@ -137,7 +144,6 @@ NTFS metafiles that open the summary are covered under
 | Scheduled Tasks | `C:\Windows\{System32,SysWOW64}\Tasks\` (recursive)<br>`<user>\AppData\Local\Microsoft\Windows\PowerShell\ScheduledJobs\` (recursive)<br>`C:\Windows\{System32,SysWOW64}\config\systemprofile\AppData\Local\Microsoft\Windows\PowerShell\ScheduledJobs\` (recursive)<br>`C:\Windows\Tasks\*.job`, `C:\Windows\SchedLgU.txt` (legacy)<br>`C:\Windows.old\Windows\System32\Tasks\` (recursive), `C:\Windows.old\Windows\Tasks\*.job`, `C:\Windows.old\Windows\SchedLgU.txt` |
 | SetupAPI | `C:\Windows\INF\setupapi*.log`<br>`C:\Windows\setupapi.log` (XP)<br>`C:\Windows.old\Windows\INF\setupapi*.log` |
 | SRUM | `C:\Windows\System32\SRU\` (recursive: `SRUDB.dat` and its ESE logs)<br>`C:\Windows.old\Windows\System32\SRU\` (recursive) |
-| Syscache | `C:\System Volume Information\Syscache.hve`, with its `.LOG1`/`.LOG2` (Windows 7 / Server) |
 | User Access Logging (SUM) | `C:\Windows\System32\LogFiles\Sum\` (recursive; Windows Server) |
 | Browser History | `<user>\AppData\Local\Microsoft\{Edge,Edge Beta,Edge Dev,Edge SxS}\User Data\<profile>\History*`<br>`<user>\AppData\Local\Google\{Chrome,Chrome Beta,Chrome Dev,Chrome SxS}\User Data\<profile>\History*`<br>`<user>\AppData\Local\{Chromium,Vivaldi,Supermium,WaveBrowser}\User Data\<profile>\History*`<br>`<user>\AppData\Local\BraveSoftware\Brave-Browser\User Data\<profile>\History*`<br>`<user>\AppData\Local\Yandex\YandexBrowser\User Data\<profile>\History*`<br>`<user>\AppData\Local\CocCoc\Browser\User Data\<profile>\History*`<br>`<user>\AppData\Local\Tencent\QQBrowser\User Data\<profile>\History*`<br>`<user>\AppData\Local\Palo Alto Networks\PrismaAccessBrowser\User Data\<profile>\History*`<br>`<user>\AppData\Local\Packages\TheBrowserCompany.Arc_ttt1ap7aakyb4\LocalCache\Local\Arc\User Data\<profile>\History*`<br>`<user>\AppData\Roaming\Opera Software\Opera Stable\History*` and `...\Opera Stable\<profile>\History*`<br>`<user>\AppData\Roaming\360se6\User Data\<profile>\360History*`<br>`<user>\AppData\Roaming\Mozilla\Firefox\Profiles\<profile>\places.sqlite*`<br>`<sysprof>\AppData\Local\` paths for Chrome (all channels), Chromium, Prisma Access, Supermium and Wave<br>`<user>\AppData\Local\Microsoft\Windows\WebCache\*` (IE 10/11, legacy Edge)<br>`index.dat` under `<user>\AppData\Local\Microsoft\Windows\{History,IEDownloadHistory}\` (recursive; IE 9 and earlier)<br>`<user>\AppData\Roaming\Mozilla\Firefox\Profiles\<profile>\downloads.sqlite*` (Firefox before v26)<br>`<user>\AppData\Roaming\Opera\Opera\{global_history.dat,typed_history.xml}` (Opera 12 and earlier)<br>`<user>\AppData\Roaming\Apple Computer\Safari\History.plist` (Safari for Windows)<br>XP: `<user>\Local Settings\Application Data\` paths for Chrome (all channels), Chromium and Prisma Access; `<user>\Application Data\` paths for Supermium, Firefox (incl. `downloads.sqlite*`), Opera 12 and Safari; `index.dat` under `<user>\Local Settings\History\History.IE5\` (recursive) |
 | File History Catalogs | `<user>\AppData\Local\Microsoft\Windows\FileHistory\Configuration\Catalog*.edb` |
@@ -183,80 +189,77 @@ A Live Response run on a workstation; counts depend on the host.
 
 ```
 C:\> run collector.ps1
-Transcript started, output file is C:\ProgramData\Microsoft\Windows Defender Advanced Threat Protection\Temp\PSScriptOutputs\PSScript_Transcript_{1F421CC2-5B0D-46C5-96C0-1640C7484804}.txt
-Live Response collector v1.0.1
-Host WS042, started 2026-10-12T10:33:45Z
-[01/33] Collecting $LogFile
-[02/33] Collecting $MFT
-[03/33] Collecting $UsnJrnl:$J
-[04/33] Collecting Amcache
-[05/33] Collecting AppCompat PCA
-[06/33] Collecting BITS
-[07/33] Collecting Defender Logs
-[08/33] Collecting Event Logs
-[09/33] Collecting Firewall Log
-[10/33] Collecting Group Policy
-[11/33] Collecting Prefetch
-[12/33] Collecting Registry Hives (system)
-[13/33] Collecting Restore Point Logs
-[14/33] Collecting SCCM Client Logs
-[15/33] Collecting Scheduled Tasks
-[16/33] Collecting SetupAPI
-[17/33] Collecting SRUM
-[18/33] Collecting Syscache
-[19/33] Collecting User Access Logging (SUM)
-[20/33] Collecting Browser History
-[21/33] Collecting File History Catalogs
-[22/33] Collecting JumpLists
-[23/33] Collecting LNK
-[24/33] Collecting .NET CLR Usage Logs
-[25/33] Collecting OneDrive Metadata
-[26/33] Collecting PowerShell History
-[27/33] Collecting PowerShell Transcripts
-[28/33] Collecting Recycle Bin ($I, INFO2)
-[29/33] Collecting Registry Hives (user)
-[30/33] Collecting Startup Folders
-[31/33] Collecting Teams Logs
-[32/33] Collecting WER
-[33/33] Collecting Windows Timeline
+Transcript started, output file is C:\ProgramData\Microsoft\Windows Defender Advanced Threat Protection\Temp\PSScriptOutputs\PSScript_Transcript_{3D5D5FE1-E341-4AC0-BBC3-59FD92F50B44}.txt
+Live Response collector v1.1.0
+Host WS042, started 2026-10-12T12:10:39Z
+OS Microsoft Windows 11 Enterprise 24H2
+[01/31] Collecting $LogFile
+[02/31] Collecting $MFT
+[03/31] Collecting $UsnJrnl:$J
+[04/31] Collecting Application Compatibility
+[05/31] Collecting BITS
+[06/31] Collecting Defender Logs
+[07/31] Collecting Event Logs
+[08/31] Collecting Firewall Log
+[09/31] Collecting Group Policy
+[10/31] Collecting Prefetch
+[11/31] Collecting Registry Hives (system)
+[12/31] Collecting Restore Point Logs
+[13/31] Collecting SCCM Client Logs
+[14/31] Collecting Scheduled Tasks
+[15/31] Collecting SetupAPI
+[16/31] Collecting SRUM
+[17/31] Collecting User Access Logging (SUM)
+[18/31] Collecting Browser History
+[19/31] Collecting File History Catalogs
+[20/31] Collecting JumpLists
+[21/31] Collecting LNK
+[22/31] Collecting .NET CLR Usage Logs
+[23/31] Collecting OneDrive Metadata
+[24/31] Collecting PowerShell History
+[25/31] Collecting PowerShell Transcripts
+[26/31] Collecting Recycle Bin ($I, INFO2)
+[27/31] Collecting Registry Hives (user)
+[28/31] Collecting Startup Folders
+[29/31] Collecting Teams Logs
+[30/31] Collecting WER
+[31/31] Collecting Windows Timeline
 
 Artefact summary:
-  $LogFile                  Not accessible
-  $MFT                      Not accessible
-  $UsnJrnl:$J               Not accessible
-  Amcache                   3 collected
-  AppCompat PCA             3 collected
+  $LogFile                  Not accessible                  (not unusual)
+  $MFT                      Not accessible                  (not unusual)
+  $UsnJrnl:$J               Not accessible                  (not unusual)
+  Application Compatibility 6 collected
   BITS                      10 collected
   Defender Logs             32 collected
   Event Logs                437 collected
-  Firewall Log              Missing
-  Group Policy              Missing
-  Prefetch                  504 collected
-  Registry Hives (system)   Not accessible
-  Restore Point Logs        Missing
-  SCCM Client Logs          Missing
-  Scheduled Tasks           317 collected
+  Firewall Log              Missing                         (not unusual)
+  Group Policy              Missing                         (not unusual)
+  Prefetch                  507 collected
+  Registry Hives (system)   Not accessible                  (not unusual)
+  Restore Point Logs        Missing                         (not unusual)
+  SCCM Client Logs          Missing                         (not unusual)
+  Scheduled Tasks           316 collected
   SetupAPI                  12 collected
-  SRUM                      7 collected, 3 not accessible
-  Syscache                  Missing
-  User Access Logging (SUM) Missing
-  Browser History           9 collected, 1 not accessible
-  File History Catalogs     Missing
+  SRUM                      18 collected
+  User Access Logging (SUM) Missing                         (not unusual)
+  Browser History           9 collected, 1 not accessible   (not unusual)
+  File History Catalogs     Missing                         (not unusual)
   JumpLists                 48 collected
   LNK                       70 collected
   .NET CLR Usage Logs       2 collected
-  OneDrive Metadata         3788 collected
+  OneDrive Metadata         3795 collected
   PowerShell History        1 collected
-  PowerShell Transcripts    Missing
+  PowerShell Transcripts    Missing                         (not unusual)
   Recycle Bin ($I, INFO2)   6 collected
-  Registry Hives (user)     27 collected, 15 not accessible
+  Registry Hives (user)     27 collected, 15 not accessible (not unusual)
   Startup Folders           3 collected
-  Teams Logs                57 collected
+  Teams Logs                42 collected
   WER                       524 collected
   Windows Timeline          9 collected
 
-Collected 5897 files total (211.99 MB)
-Retrieve with: getfile "C:\LiveResponse\WS042_20261012_103345Z.zip"
+Collected 5902 files total (232.18 MB)
+Retrieve with: getfile "C:\ProgramData\Microsoft\Windows Defender Advanced Threat Protection\Temp\Collections\WS042_20261012_121039Z.zip"
 
 Additional inaccessible artefacts (locked from PowerShell - retrieve directly in this Live Response session):
 getfile "C:\$LogFile"
@@ -265,8 +268,6 @@ getfile "C:\Windows\System32\config\SAM"
 getfile "C:\Windows\System32\config\SECURITY"
 getfile "C:\Windows\System32\config\SOFTWARE"
 getfile "C:\Windows\System32\config\SYSTEM"
-getfile "C:\Windows\System32\SRU\SRUDB.dat"
-getfile "C:\Windows\System32\SRU\SRUDB.jfm"
 getfile "C:\Windows\System32\config\DEFAULT"
 getfile "C:\Windows\ServiceProfiles\LocalService\NTUSER.DAT"
 getfile "C:\Windows\ServiceProfiles\NetworkService\NTUSER.DAT"
@@ -274,6 +275,9 @@ getfile "C:\Windows\ServiceProfiles\NetworkService\NTUSER.DAT"
 
 Status meanings: **N collected** (copied into the zip), **Not accessible** (the
 file exists but could not be read), **Missing** (not present on this host).
+**(not unusual)**, in its own column, marks a Missing or Not accessible status
+that is normal for this host (e.g. Prefetch on a server, legacy-only artefacts
+on current Windows, live registry hives), so unusual gaps stand out.
 Browser History counts browser profiles, not files; a profile counts as
 collected only if its history database was read (a locked database with
 readable journal or logs is *Not accessible*).

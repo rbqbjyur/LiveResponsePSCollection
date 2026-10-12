@@ -8,7 +8,10 @@
 
 .DESCRIPTION
     Upload to the Defender Live Response library and run it on a device. It
-    writes <SystemDrive>\LiveResponse\<hostname>_<UTC timestamp>Z.zip, prints a
+    writes <hostname>_<UTC timestamp>Z.zip under the Defender for Endpoint
+    sensor's Temp folder (ProgramData\Microsoft\Windows Defender Advanced Threat
+    Protection\Temp\Collections), falling back to a LiveResponseCollector folder
+    in Windows\SystemTemp or the account's temp folder, and prints a
     per-artefact summary, the getfile command for the zip, and getfile commands
     for locked machine-wide files it could not read.
 
@@ -43,7 +46,7 @@ param()
 
 # ============================== CONFIG ==============================
 
-$CollectorVersion = '1.0.1'
+$CollectorVersion = '1.1.0'
 
 $ErrorActionPreference = 'SilentlyContinue'
 $ProgressPreference    = 'SilentlyContinue'
@@ -58,10 +61,20 @@ $hostName = $env:COMPUTERNAME
 $runStart  = (Get-Date).ToUniversalTime()
 $timestamp = $runStart.ToString('yyyyMMdd_HHmmss') + 'Z'
 
-# Fixed, low-profile folder that holds the output of every run. Each run drops a
-# separately-named zip in here, so repeated collections accumulate side by side.
-$outDir  = Join-Path $sysDrive 'LiveResponse'
-$zipPath = Join-Path $outDir "${hostName}_${timestamp}.zip"
+# Where the output goes, in order of preference: the first folder that can be
+# created and holds the zip wins. Only the last folder in each path is ever
+# created - a candidate whose parent doesn't exist is skipped. Each run adds its
+# own zip, so repeated collections accumulate side by side.
+$outDirs = @(
+    # The Defender for Endpoint sensor's own Temp (Live Response keeps its script
+    # transcripts there too).
+    Join-Path $sysDrive 'ProgramData\Microsoft\Windows Defender Advanced Threat Protection\Temp\Collections'
+    # The SYSTEM-only temp folder of newer Windows builds (SYSTEM and Administrators).
+    Join-Path $sysDrive 'Windows\SystemTemp\LiveResponseCollector'
+    # The running account's temp folder (C:\Windows\Temp for SYSTEM).
+    Join-Path ([System.IO.Path]::GetTempPath()) 'LiveResponseCollector'
+)
+$zipName = "${hostName}_${timestamp}.zip"
 
 # Where user profiles live, relative to the system drive: modern first, then
 # legacy (XP). Each folder under a root is one profile (see Get-UserProfilePath).
@@ -83,6 +96,10 @@ $profileRoots = @('Users', 'Documents and Settings')
 #   Supporting  CountBy rows: file-name patterns of supporting files (journals,
 #            ESE logs). A unit counts as collected only if its main file was read;
 #            supporting files alone don't count while a main file is present.
+#   ExpectMissing / ExpectLocked  Conditions on the host ($hostInfo, see
+#            Get-HostInfo) under which "Missing" / "not accessible" is normal for
+#            this artefact; the summary then adds "(not unusual)". Unknown host facts
+#            never count as expected, so unusual gaps stand out.
 #   RegDirs  Folders named by registry values (Key, Value), each searched with its
 #            Pattern. Local drive paths only: shares are skipped (no network access).
 # Within a row, patterns run from the modern, standard location to legacy and
@@ -95,20 +112,25 @@ $profileRoots = @('Users', 'Documents and Settings')
 # this list doesn't matter - but keep it in that order for readability.
 $artefacts = @(
     # 1. Drive root: the timeline-relevant NTFS metafiles (the "NTFS Triforce").
-    @{ Name = '$LogFile';    Group = 1; Literal = $true; GetFile = $true; System = '$LogFile' }
-    @{ Name = '$MFT';        Group = 1; Literal = $true; GetFile = $true; System = '$MFT' }
-    @{ Name = '$UsnJrnl:$J'; Group = 1; Literal = $true; System = '$Extend\$UsnJrnl:$J' }   # no getfile route
+    @{ Name = '$LogFile';    Group = 1; ExpectLocked = { <# NTFS metafile #> $true }; Literal = $true; GetFile = $true; System = '$LogFile' }
+    @{ Name = '$MFT';        Group = 1; ExpectLocked = { <# NTFS metafile #> $true }; Literal = $true; GetFile = $true; System = '$MFT' }
+    @{ Name = '$UsnJrnl:$J'; Group = 1; ExpectLocked = { <# NTFS metafile #> $true }; Literal = $true; System = '$Extend\$UsnJrnl:$J' }   # no getfile route
 
     # 2. Other system files.
-    # Program execution records: Amcache.hve, and its Windows 7 predecessor.
-    @{ Name = 'Amcache'; Group = 2; Logs = $true; System = @(
-        'Windows\AppCompat\Programs\Amcache.hve'
-        'Windows\AppCompat\Programs\RecentFileCache.bcf'                 # Windows 7
-        'Windows.old\Windows\AppCompat\Programs\Amcache.hve'
-        'Windows.old\Windows\AppCompat\Programs\RecentFileCache.bcf'
-    ) }
-    # Program Compatibility Assistant execution records (Windows 11 22H2+).
-    @{ Name = 'AppCompat PCA'; Group = 2; System = 'Windows\appcompat\pca\*' }
+    # Application compatibility / program execution records: Amcache.hve and the
+    # Program Compatibility Assistant files (Windows 11 22H2+), then their
+    # predecessors - RecentFileCache.bcf (Windows 7) and Syscache.hve (Windows 7 /
+    # Server 2008 R2), both replaced by Amcache.hve in Windows 8 - then Windows.old.
+    @{ Name = 'Application Compatibility'; Group = 2; Logs = $true
+       ExpectLocked = { <# Syscache.hve is a loaded hive before Windows 8 #> $hostInfo.Build -and $hostInfo.Build -lt 9200 }
+       System = @(
+           'Windows\AppCompat\Programs\Amcache.hve'
+           'Windows\appcompat\pca\*'
+           'Windows\AppCompat\Programs\RecentFileCache.bcf'               # Windows 7
+           'System Volume Information\Syscache.hve'                       # Windows 7 / Server 2008 R2
+           'Windows.old\Windows\AppCompat\Programs\Amcache.hve'
+           'Windows.old\Windows\AppCompat\Programs\RecentFileCache.bcf'
+       ) }
     # BITS job database (qmgr.db) and its ESE logs: downloads and persistence.
     @{ Name = 'BITS';          Group = 2; System = 'ProgramData\Microsoft\Network\Downloader\**\*' }
     # Defender text logs (MPLog etc.) and detection history; not the quarantine
@@ -126,14 +148,14 @@ $artefacts = @(
         'Windows\System32\config\*.evt'                                  # XP
         'Windows.old\Windows\System32\winevt\logs\*.evtx'
     ) }
-    @{ Name = 'Firewall Log'; Group = 2; System = @(                     # logging off by default
+    @{ Name = 'Firewall Log'; Group = 2; ExpectMissing = { <# logging is off by default #> $true }; System = @(                     # logging off by default
         'Windows\System32\LogFiles\Firewall\pfirewall.*'
         'Windows.old\Windows\System32\LogFiles\Firewall\pfirewall.*'
     ) }
     # Group Policy: local policy and scripts, and the cached copies of domain GPOs
     # (incl. Group Policy Preferences XML such as ScheduledTasks.xml) - persistence
     # and deployment evidence.
-    @{ Name = 'Group Policy'; Group = 2
+    @{ Name = 'Group Policy'; Group = 2; ExpectMissing = { <# no domain GPOs to cache #> $hostInfo.DomainJoined -eq $false }
        System = @(
            'Windows\System32\GroupPolicy\**\*'
            'ProgramData\Microsoft\Group Policy\History\**\*'
@@ -142,14 +164,14 @@ $artefacts = @(
            'Windows.old\Windows\System32\GroupPolicy\*\Scripts\**\*'
        )
        User = 'AppData\Local\Microsoft\Group Policy\History\**\*' }
-    @{ Name = 'Prefetch'; Group = 2; System = @(
+    @{ Name = 'Prefetch'; Group = 2; ExpectMissing = { <# off by default on Windows Server #> $hostInfo.Server }; System = @(
         'Windows\Prefetch\*.pf'
         'Windows.old\Windows\Prefetch\*.pf'
     ) }
     # Transaction logs hold un-flushed changes, so Registry Explorer / RegRipper /
     # plaso can replay a dirty hive and recover the most recent entries. RegBack
     # copies are usually empty on current Windows, but older snapshots when present.
-    @{ Name = 'Registry Hives (system)'; Group = 2; Logs = $true; System = @(
+    @{ Name = 'Registry Hives (system)'; Group = 2; ExpectLocked = { <# loaded hives #> $true }; Logs = $true; System = @(
         'Windows\System32\config\SAM'
         'Windows\System32\config\SECURITY'
         'Windows\System32\config\SOFTWARE'
@@ -171,9 +193,9 @@ $artefacts = @(
         'Windows.old\Windows\System32\config\RegBack\SYSTEM1'
     ) }
     # XP restore-point logs (rp.log: each restore point's creation time and description).
-    @{ Name = 'Restore Point Logs'; Group = 2; System = 'System Volume Information\_restore*\RP*\rp.log' }
+    @{ Name = 'Restore Point Logs'; Group = 2; ExpectMissing = { <# XP / Server 2003 only #> $hostInfo.Build -ge 6000 }; System = 'System Volume Information\_restore*\RP*\rp.log' }
     # Configuration Manager (SCCM) client logs; only on ConfigMgr-managed hosts.
-    @{ Name = 'SCCM Client Logs';   Group = 2; System = 'Windows\CCM\Logs\*' }
+    @{ Name = 'SCCM Client Logs';   Group = 2; ExpectMissing = { <# no ConfigMgr client #> $hostInfo.ConfigMgr -eq $false }; System = 'Windows\CCM\Logs\*' }
     # XML task definitions, plus PowerShell scheduled jobs (definitions and output).
     @{ Name = 'Scheduled Tasks'; Group = 2
        System = @(
@@ -195,20 +217,18 @@ $artefacts = @(
         'Windows.old\Windows\INF\setupapi*.log'
     ) }
     # SRUDB.dat plus its ESE logs and checkpoint, for dirty-database recovery.
-    @{ Name = 'SRUM'; Group = 2; System = @(
+    @{ Name = 'SRUM'; Group = 2; ExpectMissing = { <# Windows 8+; not enabled by default on Windows Server #> $hostInfo.Server -or ($hostInfo.Build -and $hostInfo.Build -lt 9200) }; ExpectLocked = { <# often held open #> $true }; System = @(
         'Windows\System32\SRU\**\*'
         'Windows.old\Windows\System32\SRU\**\*'
     ) }
-    # Syscache.hve: program/file execution data (Windows 7 / Server era).
-    @{ Name = 'Syscache'; Group = 2; Logs = $true; System = 'System Volume Information\Syscache.hve' }
     # User Access Logging (Windows Server): clients and users per role, with first
     # and last access times. ESE databases plus their logs, needed to repair them.
-    @{ Name = 'User Access Logging (SUM)'; Group = 2; System = 'Windows\System32\LogFiles\Sum\**\*' }
+    @{ Name = 'User Access Logging (SUM)'; Group = 2; ExpectMissing = { <# Windows Server only #> $hostInfo.Server -eq $false }; ExpectLocked = { <# Current.mdb held by the UAL service #> $true }; System = 'Windows\System32\LogFiles\Sum\**\*' }
 
     # 3. User-specific. Service accounts (SYSTEM, LocalService, NetworkService) are
     # not user profiles; where they matter, their paths are listed under System.
     # .NET CLR usage logs: one log per process that loaded the CLR (e.g. .NET tooling).
-    @{ Name = '.NET CLR Usage Logs'; Group = 3
+    @{ Name = '.NET CLR Usage Logs'; Group = 3; ExpectMissing = { <# only after .NET Framework apps ran #> $true }
        System = @(
            'Windows\System32\config\systemprofile\AppData\Local\Microsoft\CLR_*\**\*.log'
            'Windows.old\Windows\System32\config\systemprofile\AppData\Local\Microsoft\CLR_*\**\*.log'
@@ -218,7 +238,7 @@ $artefacts = @(
     # browser x profile. History DB only (plus its journal). Maintained browsers
     # first, then IE / legacy Edge (WebCache, index.dat) and other discontinued
     # browsers or formats, then XP profile paths.
-    @{ Name = 'Browser History'; Group = 3; CountBy = 'Folder'
+    @{ Name = 'Browser History'; Group = 3; ExpectMissing = { <# servers are rarely browsed on #> $hostInfo.Server }; ExpectLocked = { <# WebCache / running browsers #> $true }; CountBy = 'Folder'
        Supporting = @('*-journal', '*-wal', '*-shm', '*Provider Cache', '*.log', '*.chk', '*.jrs', '*.jfm')
        System = @(
            'Windows\System32\config\systemprofile\AppData\Local\Google\Chrome\User Data\*\History*'
@@ -276,7 +296,7 @@ $artefacts = @(
        ) }
     # File History catalogs (Catalog1/2.edb): metadata about backed-up files, not
     # the files themselves; only present when File History is enabled.
-    @{ Name = 'File History Catalogs'; Group = 3; User = 'AppData\Local\Microsoft\Windows\FileHistory\Configuration\Catalog*.edb' }
+    @{ Name = 'File History Catalogs'; Group = 3; ExpectMissing = { <# File History is off by default #> $true }; User = 'AppData\Local\Microsoft\Windows\FileHistory\Configuration\Catalog*.edb' }
     @{ Name = 'JumpLists'; Group = 3; User = @(
         'AppData\Roaming\Microsoft\Windows\Recent\AutomaticDestinations\*.automaticDestinations-ms'
         'AppData\Roaming\Microsoft\Windows\Recent\CustomDestinations\*.customDestinations-ms'
@@ -299,7 +319,7 @@ $artefacts = @(
     # obfuscated strings, then the older SkyDrive and Windows 8.1
     # built-in client locations. Not the ETW traces (.etlgz, bulk), the client's
     # own program files or the synced files.
-    @{ Name = 'OneDrive Metadata'; Group = 3; User = @(
+    @{ Name = 'OneDrive Metadata'; Group = 3; ExpectMissing = { <# not used on servers #> $hostInfo.Server }; User = @(
         'AppData\Local\Microsoft\OneDrive\settings\**\*'
         'AppData\Local\Microsoft\OneDrive\logs\**\*.odl*'
         'AppData\Local\Microsoft\OneDrive\logs\**\*.aodl'
@@ -309,7 +329,7 @@ $artefacts = @(
         'AppData\Local\Microsoft\Windows\OneDrive\logs\**\*'              # Windows 8.1
     ) }
     # PSReadLine history for every host (console, VS Code, ...), including SYSTEM's.
-    @{ Name = 'PowerShell History'; Group = 3
+    @{ Name = 'PowerShell History'; Group = 3; ExpectMissing = { <# no interactive PowerShell use #> $true }
        System = @(
            'Windows\System32\config\systemprofile\AppData\Roaming\Microsoft\Windows\PowerShell\PSReadLine\*_history.txt'
            'Windows\SysWOW64\config\systemprofile\AppData\Roaming\Microsoft\Windows\PowerShell\PSReadLine\*_history.txt'
@@ -319,7 +339,7 @@ $artefacts = @(
     # Folder Move) - directly or, with policy transcription, in date subfolders.
     # Policy can also redirect them to a central folder (Windows PowerShell and PS 7);
     # System lists other places they are commonly found (SYSTEM runs, C:\PSTranscript).
-    @{ Name = 'PowerShell Transcripts'; Group = 3
+    @{ Name = 'PowerShell Transcripts'; Group = 3; ExpectMissing = { <# transcription policy off #> $hostInfo.Transcription -eq $false }
        System = @(
            'Windows\System32\*\PowerShell_transcript.*.txt'
            'Windows\SysWOW64\*\PowerShell_transcript.*.txt'
@@ -336,13 +356,13 @@ $artefacts = @(
            @{ Key = 'HKLM:\SOFTWARE\Policies\Microsoft\PowerShellCore\Transcription';     Value = 'OutputDirectory'; Pattern = '**\PowerShell_transcript.*.txt' }
        ) }
     # Recycle Bin metadata only ($I records; INFO2 on XP), no deleted-file content.
-    @{ Name = 'Recycle Bin ($I, INFO2)'; Group = 3; System = @(
+    @{ Name = 'Recycle Bin ($I, INFO2)'; Group = 3; ExpectMissing = { <# empty recycle bins #> $true }; System = @(
         '$Recycle.Bin\*\$I*'
         'RECYCLE*\**\INFO2'                                              # XP (RECYCLER / RECYCLED)
     ) }
     # User hives, plus the service accounts' hives: DEFAULT is the SYSTEM account's
     # (HKU\.DEFAULT / S-1-5-18), the others LocalService and NetworkService.
-    @{ Name = 'Registry Hives (user)'; Group = 3; Logs = $true
+    @{ Name = 'Registry Hives (user)'; Group = 3; ExpectLocked = { <# logged-on users' and service hives #> $true }; Logs = $true
        System = @(
            'Windows\System32\config\DEFAULT'
            'Windows\System32\config\systemprofile\NTUSER.DAT'
@@ -357,22 +377,22 @@ $artefacts = @(
            'NTUSER.DAT'
            'AppData\Local\Microsoft\Windows\UsrClass.dat'
        ) }
-    @{ Name = 'Startup Folders'; Group = 3
+    @{ Name = 'Startup Folders'; Group = 3; ExpectMissing = { <# often empty #> $true }
        System = 'ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp\**\*'
        User   = 'AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\**\*' }
     # Teams client logs only (sign-ins, calls, meetings); no message stores or caches.
     # New Teams (work/school), the Windows 11 built-in Teams, then classic Teams.
-    @{ Name = 'Teams Logs'; Group = 3; User = @(
+    @{ Name = 'Teams Logs'; Group = 3; ExpectMissing = { <# Teams not installed or not used #> $true }; User = @(
         'AppData\Local\Packages\MSTeams_8wekyb3d8bbwe\LocalCache\Microsoft\MSTeams\Logs\*'
         'AppData\Local\Packages\MicrosoftTeams_8wekyb3d8bbwe\LocalCache\Microsoft\MSTeams\Logs\*'
         'AppData\Roaming\Microsoft\Teams\logs.txt'                              # classic Teams
     ) }
     # WER: only the .wer report metadata, never the crash dumps (bulk binary content).
-    @{ Name = 'WER'; Group = 3
+    @{ Name = 'WER'; Group = 3; ExpectMissing = { <# no crashes reported #> $true }
        System = 'ProgramData\Microsoft\Windows\WER\**\*.wer'
        User   = 'AppData\Local\Microsoft\Windows\WER\**\*.wer' }
     # Windows Timeline (Windows 10; dropped in Windows 11).
-    @{ Name = 'Windows Timeline'; Group = 3; User = 'AppData\Local\ConnectedDevicesPlatform\**\ActivitiesCache.db*' }
+    @{ Name = 'Windows Timeline'; Group = 3; ExpectMissing = { <# Windows 10 clients only #> $hostInfo.Server -or $hostInfo.Build -ge 22000 }; User = 'AppData\Local\ConnectedDevicesPlatform\**\ActivitiesCache.db*' }
 )
 
 # ============================= FUNCTIONS =============================
@@ -466,6 +486,51 @@ function Get-RegistryValue {
         $value = (Get-ItemProperty -LiteralPath $Path -Name $Name -ErrorAction Stop).$Name
         if ($value) { [Environment]::ExpandEnvironmentVariables($value) }
     } catch {}
+}
+
+# Facts about the host for the OS line and the "(not unusual)" summary notes. The
+# name and type come from CIM (Win32_OperatingSystem's caption is right for
+# Windows 11) and the release (e.g. 23H2) from the registry; if CIM fails, the
+# registry alone, correcting its ProductName, which still says "Windows 10" on
+# Windows 11. Decisions use the build number and the server/workstation type,
+# never the name, which is localised. A fact that can't be determined stays
+# $null, and conditions treat $null as "not expected".
+function Get-HostInfo {
+    $cv   = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion'
+    $info = @{ Caption = $null; Version = $null; Build = $null
+               Server = $null; DomainJoined = $null; ConfigMgr = $null; Transcription = $null }
+    try {
+        $os = Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction Stop
+        $info.Caption = $os.Caption.Trim()
+        $info.Build   = [int]$os.BuildNumber
+        $info.Server  = ($os.ProductType -ne 1)   # 1 = workstation, 2 = DC, 3 = server
+    } catch {}
+    try { $info.DomainJoined = [bool](Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction Stop).PartOfDomain } catch {}
+    try {
+        $reg = Get-ItemProperty -LiteralPath $cv -ErrorAction Stop
+        $info.Version = if ($reg.DisplayVersion) { $reg.DisplayVersion } else { $reg.ReleaseId }
+        if (-not $info.Build)  { $info.Build = [int]$reg.CurrentBuild }
+        if ($null -eq $info.Server -and $reg.InstallationType) { $info.Server = ($reg.InstallationType -notlike 'Client*') }
+        if (-not $info.Caption -and $reg.ProductName) {
+            $info.Caption = $reg.ProductName
+            if ($info.Build -ge 22000) { $info.Caption = $info.Caption -replace 'Windows 10', 'Windows 11' }
+        }
+    } catch {}
+    $info.ConfigMgr = [bool](Get-Service -Name 'CcmExec' -ErrorAction SilentlyContinue)
+    $info.Transcription = $false
+    foreach ($k in 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\Transcription',
+                   'HKLM:\SOFTWARE\Policies\Microsoft\PowerShellCore\Transcription') {
+        if ((Get-RegistryValue -Path $k -Name 'EnableTranscripting') -eq '1') { $info.Transcription = $true }
+    }
+    $info
+}
+
+# True if a row's expectation condition (a scriptblock using $hostInfo) holds.
+# Missing or failing conditions count as "not expected".
+function Test-Expectation {
+    param($Condition)
+    if (-not $Condition) { return $false }
+    try { return [bool](& $Condition) } catch { return $false }
 }
 
 # User profiles: every folder under each profile root, in $profileRoots order
@@ -638,7 +703,12 @@ function Add-Artefact {
         $tally.Collected  = @($units.Values | Where-Object { $_.Main -eq $true -or ($null -eq $_.Main -and $_.Any) }).Count
         $tally.Failed     = $tally.Candidates - $tally.Collected
     }
-    $script:summary[$Artefact.Name] = Format-Status @tally
+    $status = Format-Status @tally
+    $script:summary[$Artefact.Name] = $status
+    if (($status -eq 'Missing' -and (Test-Expectation -Condition $Artefact.ExpectMissing)) -or
+        ($status -like '*not accessible*' -and (Test-Expectation -Condition $Artefact.ExpectLocked))) {
+        [void]$script:expected.Add($Artefact.Name)
+    }
 }
 
 # --- Cleanup ---
@@ -679,6 +749,9 @@ public static extern bool MoveFileEx(string lpExistingFileName, string lpNewFile
 # Banner first, before any status, so the version is the first thing printed.
 Write-Output "Live Response collector v$CollectorVersion"
 Write-Output ("Host {0}, started {1}" -f $hostName, $runStart.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'"))
+$hostInfo = Get-HostInfo
+$osName   = @($hostInfo.Caption, $hostInfo.Version | Where-Object { $_ }) -join ' '
+if ($osName) { Write-Output "OS $osName" }
 
 # Script-scope state.
 $script:added   = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
@@ -688,6 +761,7 @@ $script:linkCache = @{}                                                # folder 
 $script:diskFull  = $false                                             # set when the system drive fills up (Test-DiskFull)
 $script:diskFullAt = ''                                                # artefact being collected when it did
 $script:summary = [ordered]@{}                                         # artefact name -> status, in display order
+$script:expected = New-Object 'System.Collections.Generic.HashSet[string]'  # artefacts whose gap is normal here
 
 # Fix the run order once: group, then name ignoring non-alphanumerics. Collection,
 # progress numbering and the summary all follow it. Lines start as 'Missing'.
@@ -696,17 +770,30 @@ foreach ($a in $artefacts) { $script:summary[$a.Name] = 'Missing' }
 $script:stageTotal = $artefacts.Count
 $script:stageNum   = 0
 
-$zip = $null
 try {
-    $dir = New-Item -ItemType Directory -Path $outDir -Force
-    # Hidden + System keeps it out of a default Explorer view (and even when the
-    # user has "show hidden files" on). IT, getfile, and -Force still see it fine.
-    try { $dir.Attributes = $dir.Attributes -bor [System.IO.FileAttributes]::Hidden -bor [System.IO.FileAttributes]::System } catch {}
     Add-Type -AssemblyName System.IO.Compression
     Add-Type -AssemblyName System.IO.Compression.FileSystem
-    $zip = [System.IO.Compression.ZipFile]::Open($zipPath, [System.IO.Compression.ZipArchiveMode]::Create)
-} catch {
-    Write-Output "Could not create $zipPath"
+} catch {}
+
+# Open the zip in the first output folder that works. A folder created here but
+# then unusable (e.g. the sensor refuses writes) is removed again if still empty.
+$zip = $null; $outDir = $null; $zipPath = $null
+foreach ($candidate in $outDirs) {
+    if (-not (Test-Path -LiteralPath (Split-Path -Path $candidate -Parent))) { continue }
+    $existed = Test-Path -LiteralPath $candidate
+    try {
+        $null    = New-Item -ItemType Directory -Path $candidate -Force -ErrorAction Stop
+        $zipPath = Join-Path $candidate $zipName
+        $zip     = [System.IO.Compression.ZipFile]::Open($zipPath, [System.IO.Compression.ZipArchiveMode]::Create)
+        $outDir  = $candidate
+        break
+    } catch {
+        $zip = $null
+        if (-not $existed) { try { Remove-Item -LiteralPath $candidate -Force -ErrorAction Stop } catch {} }
+    }
+}
+if (-not $zip) {
+    Write-Output ('Could not create the output zip in: ' + ($outDirs -join '; '))
     return
 }
 
@@ -744,10 +831,13 @@ Register-DeleteOnReboot -Folder $outDir
 
 Write-Output ''
 Write-Output 'Artefact summary:'
-# Name column sized to the longest artefact name, so the statuses line up.
-$nameWidth = ($script:summary.Keys | ForEach-Object { $_.Length } | Measure-Object -Maximum).Maximum
+# Three columns: name, status, and "(not unusual)" where the gap is normal for this
+# host. Name and status widths follow the longest entry, so everything lines up.
+$nameWidth   = ($script:summary.Keys   | ForEach-Object { $_.Length } | Measure-Object -Maximum).Maximum
+$statusWidth = ($script:summary.Values | ForEach-Object { $_.Length } | Measure-Object -Maximum).Maximum
 foreach ($name in $script:summary.Keys) {
-    Write-Output (("  {0,-" + $nameWidth + "} {1}") -f $name, $script:summary[$name])
+    $note = if ($script:expected.Contains($name)) { '(not unusual)' } else { '' }
+    Write-Output ((("  {0,-" + $nameWidth + "} {1,-" + $statusWidth + "} {2}") -f $name, $script:summary[$name], $note).TrimEnd())
 }
 
 $zipSize = ''
