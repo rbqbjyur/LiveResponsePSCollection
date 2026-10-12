@@ -4,6 +4,26 @@ Notable changes to `collector.ps1`. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 1.0.0 - 2026-10-12
+
+### Added
+- Legacy forms of existing artefacts, listed after their current form: `.evt`,
+  `setupapi.log`, `.job` and `SchedLgU.txt`, Recycle Bin `INFO2`, XP profile
+  paths (`Documents and Settings`), XP restore-point hives and shortcuts, older
+  Defender logs, legacy browser history (Firefox `downloads.sqlite`, Opera 12,
+  Safari for Windows), and the previous install in `Windows.old`.
+- Amcache line (with `RecentFileCache.bcf`), Syscache, Windows Timeline, XP
+  restore-point logs, SCCM client logs, OneDrive metadata (settings and logs),
+  Group Policy (local and cached domain GPOs), User Access Logging (SUM), Teams
+  logs, and IE / legacy Edge history (WebCache, `index.dat`).
+
+### Changed
+- Amcache moved out of "Registry Hives (system)" into its own line; "EVTX"
+  renamed "Event Logs"; "Recycle Bin ($I)" renamed "Recycle Bin ($I, INFO2)".
+- Summary name column sized to the longest artefact name.
+- Junctions and symbolic links are skipped by link type, so other reparse
+  points (e.g. OneDrive cloud folders) are no longer skipped.
+
 ## 0.16.1 - 2026-10-12
 
 ### Changed

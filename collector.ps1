@@ -19,7 +19,7 @@ param()
 
 # ============================== CONFIG ==============================
 
-$CollectorVersion = '0.16.1'
+$CollectorVersion = '1.0.0'
 
 $ErrorActionPreference = 'SilentlyContinue'
 $ProgressPreference    = 'SilentlyContinue'
@@ -38,6 +38,10 @@ $timestamp = $runStart.ToString('yyyyMMdd_HHmmss') + 'Z'
 $outDir  = Join-Path $sysDrive 'LiveResponse'
 $zipPath = Join-Path $outDir "${hostName}_${timestamp}.zip"
 
+# Where user profiles live, relative to the system drive: modern first, then
+# legacy (XP). Each folder under a root is one profile (see Get-UserProfilePath).
+$profileRoots = @('Users', 'Documents and Settings')
+
 # Artefacts to collect: one row per summary line. Add an artefact by adding a row.
 #   Name     Summary label.
 #   Group    1 = drive root (NTFS metafiles), 2 = other system files, 3 = user-specific.
@@ -53,6 +57,10 @@ $zipPath = Join-Path $outDir "${hostName}_${timestamp}.zip"
 #            profile) instead of one per file.
 #   RegDirs  Folders named by registry values (Key, Value), each searched with its
 #            Pattern. Local drive paths only: shares are skipped (no network access).
+# Within a row, patterns run from the modern, standard location to legacy and
+# alternative ones: current Windows first, then older Windows forms (Windows 7,
+# XP), then the previous install kept in Windows.old after a feature update.
+# Legacy forms are part of the same artefact, so they share its summary line.
 # Pattern syntax: see Resolve-PathPattern. Collection, progress and summary all
 # run in Group order, then by Name alphabetically ignoring non-alphanumerics (e.g.
 # the leading '$'). That order is applied at run time, so a row's position in
@@ -64,21 +72,52 @@ $artefacts = @(
     @{ Name = '$UsnJrnl:$J'; Group = 1; Literal = $true; System = '$Extend\$UsnJrnl:$J' }   # no getfile route
 
     # 2. Other system files.
+    # Program execution records: Amcache.hve, and its Windows 7 predecessor.
+    @{ Name = 'Amcache'; Group = 2; Logs = $true; System = @(
+        'Windows\AppCompat\Programs\Amcache.hve'
+        'Windows\AppCompat\Programs\RecentFileCache.bcf'                 # Windows 7
+        'Windows.old\Windows\AppCompat\Programs\Amcache.hve'
+        'Windows.old\Windows\AppCompat\Programs\RecentFileCache.bcf'
+    ) }
     # Program Compatibility Assistant execution records (Windows 11 22H2+).
     @{ Name = 'AppCompat PCA'; Group = 2; System = 'Windows\appcompat\pca\*' }
     # BITS job database (qmgr.db) and its ESE logs: downloads and persistence.
     @{ Name = 'BITS';          Group = 2; System = 'ProgramData\Microsoft\Network\Downloader\**\*' }
     # Defender text logs (MPLog etc.) and detection history; not the quarantine
-    # (file content). Defender event logs are already covered by EVTX.
+    # (file content). Defender event logs are covered by Event Logs.
     @{ Name = 'Defender Logs'; Group = 2; System = @(
         'ProgramData\Microsoft\Windows Defender\Support\**\*'
         'ProgramData\Microsoft\Windows Defender\Scans\History\Service\DetectionHistory\**\*'
         'ProgramData\Microsoft\Windows Defender\Scans\History\Service\Detections.log'
         'Windows\Temp\MpCmdRun.log'
+        'ProgramData\Microsoft\Microsoft AntiMalware\Support\**\*'      # older Defender / SCEP
+        'Windows.old\Windows\Temp\MpCmdRun.log'
     ) }
-    @{ Name = 'EVTX';          Group = 2; System = 'Windows\System32\winevt\logs\*.evtx' }
-    @{ Name = 'Firewall Log';  Group = 2; System = 'Windows\System32\LogFiles\Firewall\pfirewall.*' }   # logging off by default
-    @{ Name = 'Prefetch';      Group = 2; System = 'Windows\Prefetch\*.pf' }
+    @{ Name = 'Event Logs'; Group = 2; System = @(
+        'Windows\System32\winevt\logs\*.evtx'
+        'Windows\System32\config\*.evt'                                  # XP
+        'Windows.old\Windows\System32\winevt\logs\*.evtx'
+    ) }
+    @{ Name = 'Firewall Log'; Group = 2; System = @(                     # logging off by default
+        'Windows\System32\LogFiles\Firewall\pfirewall.*'
+        'Windows.old\Windows\System32\LogFiles\Firewall\pfirewall.*'
+    ) }
+    # Group Policy: local policy and scripts, and the cached copies of domain GPOs
+    # (incl. Group Policy Preferences XML such as ScheduledTasks.xml) - persistence
+    # and deployment evidence.
+    @{ Name = 'Group Policy'; Group = 2
+       System = @(
+           'Windows\System32\GroupPolicy\**\*'
+           'ProgramData\Microsoft\Group Policy\History\**\*'
+           'Windows.old\Windows\System32\GroupPolicy\*.ini'
+           'Windows.old\Windows\System32\GroupPolicy\*.pol'
+           'Windows.old\Windows\System32\GroupPolicy\*\Scripts\**\*'
+       )
+       User = 'AppData\Local\Microsoft\Group Policy\History\**\*' }
+    @{ Name = 'Prefetch'; Group = 2; System = @(
+        'Windows\Prefetch\*.pf'
+        'Windows.old\Windows\Prefetch\*.pf'
+    ) }
     # Transaction logs hold un-flushed changes, so Registry Explorer / RegRipper /
     # plaso can replay a dirty hive and recover the most recent entries. RegBack
     # copies are usually empty on current Windows, but older snapshots when present.
@@ -92,8 +131,21 @@ $artefacts = @(
         'Windows\System32\config\RegBack\SOFTWARE'
         'Windows\System32\config\RegBack\SYSTEM'
         'Windows\System32\config\RegBack\SYSTEM1'
-        'Windows\AppCompat\Programs\Amcache.hve'
+        'System Volume Information\_restore*\RP*\snapshot\_REGISTRY_*'  # XP restore points
+        'Windows.old\Windows\System32\config\SAM'
+        'Windows.old\Windows\System32\config\SECURITY'
+        'Windows.old\Windows\System32\config\SOFTWARE'
+        'Windows.old\Windows\System32\config\SYSTEM'
+        'Windows.old\Windows\System32\config\RegBack\SAM'
+        'Windows.old\Windows\System32\config\RegBack\SECURITY'
+        'Windows.old\Windows\System32\config\RegBack\SOFTWARE'
+        'Windows.old\Windows\System32\config\RegBack\SYSTEM'
+        'Windows.old\Windows\System32\config\RegBack\SYSTEM1'
     ) }
+    # XP restore-point logs (rp.log: each restore point's creation time and description).
+    @{ Name = 'Restore Point Logs'; Group = 2; System = 'System Volume Information\_restore*\RP*\rp.log' }
+    # Configuration Manager (SCCM) client logs; only on ConfigMgr-managed hosts.
+    @{ Name = 'SCCM Client Logs';   Group = 2; System = 'Windows\CCM\Logs\*' }
     # XML task definitions, plus PowerShell scheduled jobs (definitions and output).
     @{ Name = 'Scheduled Tasks'; Group = 2
        System = @(
@@ -101,20 +153,43 @@ $artefacts = @(
            'Windows\SysWOW64\Tasks\**\*'
            'Windows\System32\config\systemprofile\AppData\Local\Microsoft\Windows\PowerShell\ScheduledJobs\**\*'
            'Windows\SysWOW64\config\systemprofile\AppData\Local\Microsoft\Windows\PowerShell\ScheduledJobs\**\*'
+           'Windows\Tasks\*.job'                                         # legacy at.exe / Task Scheduler 1.0
+           'Windows\SchedLgU.txt'                                        # legacy Task Scheduler log
+           'Windows.old\Windows\System32\Tasks\**\*'
+           'Windows.old\Windows\Tasks\*.job'
+           'Windows.old\Windows\SchedLgU.txt'
        )
        User = 'AppData\Local\Microsoft\Windows\PowerShell\ScheduledJobs\**\*' }
-    @{ Name = 'SetupAPI'; Group = 2; System = 'Windows\INF\setupapi*.log' }   # not legacy <windir>\setupapi.log
+    # Device/driver install logs.
+    @{ Name = 'SetupAPI'; Group = 2; System = @(
+        'Windows\INF\setupapi*.log'
+        'Windows\setupapi.log'                                           # XP
+        'Windows.old\Windows\INF\setupapi*.log'
+    ) }
     # SRUDB.dat plus its ESE logs and checkpoint, for dirty-database recovery.
-    @{ Name = 'SRUM';     Group = 2; System = 'Windows\System32\SRU\**\*' }
+    @{ Name = 'SRUM'; Group = 2; System = @(
+        'Windows\System32\SRU\**\*'
+        'Windows.old\Windows\System32\SRU\**\*'
+    ) }
+    # Syscache.hve: program/file execution data (Windows 7 / Server era).
+    @{ Name = 'Syscache'; Group = 2; Logs = $true; System = 'System Volume Information\Syscache.hve' }
+    # User Access Logging (Windows Server): clients and users per role, with first
+    # and last access times. ESE databases plus their logs, needed to repair them.
+    @{ Name = 'User Access Logging (SUM)'; Group = 2; System = 'Windows\System32\LogFiles\Sum\**\*' }
 
     # 3. User-specific. Service accounts (SYSTEM, LocalService, NetworkService) are
     # not user profiles; where they matter, their paths are listed under System.
     # .NET CLR usage logs: one log per process that loaded the CLR (e.g. .NET tooling).
     @{ Name = '.NET CLR Usage Logs'; Group = 3
-       System = 'Windows\System32\config\systemprofile\AppData\Local\Microsoft\CLR_*\**\*.log'
-       User   = 'AppData\Local\Microsoft\CLR_*\**\*.log' }
-    # Browser history: maintained browsers, one pattern per browser (or channel),
-    # counted per user x browser x profile. History DB only (plus its journal).
+       System = @(
+           'Windows\System32\config\systemprofile\AppData\Local\Microsoft\CLR_*\**\*.log'
+           'Windows.old\Windows\System32\config\systemprofile\AppData\Local\Microsoft\CLR_*\**\*.log'
+       )
+       User = 'AppData\Local\Microsoft\CLR_*\**\*.log' }
+    # Browser history: one pattern per browser (or channel), counted per user x
+    # browser x profile. History DB only (plus its journal). Maintained browsers
+    # first, then IE / legacy Edge (WebCache, index.dat) and other discontinued
+    # browsers or formats, then XP profile paths.
     @{ Name = 'Browser History'; Group = 3; CountBy = 'Folder'
        System = @(
            'Windows\System32\config\systemprofile\AppData\Local\Google\Chrome\User Data\*\History*'
@@ -149,23 +224,61 @@ $artefacts = @(
            'AppData\Local\Palo Alto Networks\PrismaAccessBrowser\User Data\*\History*'           # Prisma Access Browser
            'AppData\Local\Supermium\User Data\*\History*'                                        # Supermium
            'AppData\Roaming\Mozilla\Firefox\Profiles\*\places.sqlite*'                           # Firefox
+           'AppData\Local\Microsoft\Windows\WebCache\*'                                          # IE 10/11, legacy Edge
+           'AppData\Local\Microsoft\Windows\History\**\index.dat'                                # IE 9 and earlier
+           'AppData\Local\Microsoft\Windows\IEDownloadHistory\**\index.dat'                      # IE 9/10 downloads
+           'AppData\Roaming\Mozilla\Firefox\Profiles\*\downloads.sqlite*'                        # Firefox < 26 downloads
+           'AppData\Roaming\Opera\Opera\global_history.dat'                                      # Opera <= 12
+           'AppData\Roaming\Opera\Opera\typed_history.xml'                                       # Opera <= 12
+           'AppData\Roaming\Apple Computer\Safari\History.plist'                                 # Safari for Windows
+           'Local Settings\Application Data\Google\Chrome\User Data\*\History*'                  # XP: Chrome
+           'Local Settings\Application Data\Google\Chrome Beta\User Data\*\History*'             # XP: Chrome Beta
+           'Local Settings\Application Data\Google\Chrome Dev\User Data\*\History*'              # XP: Chrome Dev
+           'Local Settings\Application Data\Google\Chrome SxS\User Data\*\History*'              # XP: Chrome Canary
+           'Local Settings\Application Data\Chromium\User Data\*\History*'                       # XP: Chromium
+           'Local Settings\Application Data\Palo Alto Networks\PrismaAccessBrowser\User Data\*\History*'   # XP: Prisma Access
+           'Application Data\Supermium\User Data\*\History*'                                     # XP: Supermium
+           'Application Data\Mozilla\Firefox\Profiles\*\places.sqlite*'                          # XP: Firefox
+           'Application Data\Mozilla\Firefox\Profiles\*\downloads.sqlite*'                       # XP: Firefox < 26 downloads
+           'Application Data\Opera\Opera\global_history.dat'                                      # XP: Opera <= 12
+           'Application Data\Opera\Opera\typed_history.xml'                                       # XP: Opera <= 12
+           'Application Data\Apple Computer\Safari\History.plist'                                 # XP: Safari
+           'Local Settings\History\History.IE5\**\index.dat'                                     # XP: IE
        ) }
     # File History catalogs (Catalog1/2.edb): metadata about backed-up files, not
     # the files themselves; only present when File History is enabled.
     @{ Name = 'File History Catalogs'; Group = 3; User = 'AppData\Local\Microsoft\Windows\FileHistory\Configuration\Catalog*.edb' }
-    @{ Name = 'JumpLists';    Group = 3; User = @(
+    @{ Name = 'JumpLists'; Group = 3; User = @(
         'AppData\Roaming\Microsoft\Windows\Recent\AutomaticDestinations\*.automaticDestinations-ms'
         'AppData\Roaming\Microsoft\Windows\Recent\CustomDestinations\*.customDestinations-ms'
     ) }
     # Shortcuts: recent files, Office recent, desktop and Start Menu (top level only).
     @{ Name = 'LNK'; Group = 3
-       System = 'ProgramData\Microsoft\Windows\Start Menu\Programs\*.lnk'
+       System = @(
+           'ProgramData\Microsoft\Windows\Start Menu\Programs\*.lnk'
+           'System Volume Information\_restore*\RP*\*.lnk'               # XP restore points
+       )
        User = @(
            'AppData\Roaming\Microsoft\Windows\Recent\*.lnk'
            'AppData\Roaming\Microsoft\Office\Recent\**\*'
            'Desktop\*.lnk'
            'AppData\Roaming\Microsoft\Windows\Start Menu\Programs\*.lnk'
+           'Recent\**\*'                                                 # XP
        ) }
+    # OneDrive: settings (file lists, sync database) and client activity logs (.odl,
+    # .odlgz, .odlsent, .aodl, .loggz) with the .keystore needed to decode their
+    # obfuscated strings, then the older SkyDrive and Windows 8.1
+    # built-in client locations. Not the ETW traces (.etlgz, bulk), the client's
+    # own program files or the synced files.
+    @{ Name = 'OneDrive Metadata'; Group = 3; User = @(
+        'AppData\Local\Microsoft\OneDrive\settings\**\*'
+        'AppData\Local\Microsoft\OneDrive\logs\**\*.odl*'
+        'AppData\Local\Microsoft\OneDrive\logs\**\*.aodl'
+        'AppData\Local\Microsoft\OneDrive\logs\**\*.loggz'
+        'AppData\Local\Microsoft\OneDrive\logs\**\*.keystore'
+        'AppData\Local\Microsoft\SkyDrive\logs\**\*'                       # SkyDrive
+        'AppData\Local\Microsoft\Windows\OneDrive\logs\**\*'              # Windows 8.1
+    ) }
     # PSReadLine history for every host (console, VS Code, ...), including SYSTEM's.
     @{ Name = 'PowerShell History'; Group = 3
        System = @(
@@ -193,7 +306,11 @@ $artefacts = @(
            @{ Key = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\Transcription'; Value = 'OutputDirectory'; Pattern = '**\PowerShell_transcript.*.txt' }
            @{ Key = 'HKLM:\SOFTWARE\Policies\Microsoft\PowerShellCore\Transcription';     Value = 'OutputDirectory'; Pattern = '**\PowerShell_transcript.*.txt' }
        ) }
-    @{ Name = 'Recycle Bin ($I)'; Group = 3; System = '$Recycle.Bin\*\$I*' }   # $I metadata only, no $R content
+    # Recycle Bin metadata only ($I records; INFO2 on XP), no deleted-file content.
+    @{ Name = 'Recycle Bin ($I, INFO2)'; Group = 3; System = @(
+        '$Recycle.Bin\*\$I*'
+        'RECYCLE*\**\INFO2'                                              # XP (RECYCLER / RECYCLED)
+    ) }
     # User hives, plus the service accounts' hives: DEFAULT is the SYSTEM account's
     # (HKU\.DEFAULT / S-1-5-18), the others LocalService and NetworkService.
     @{ Name = 'Registry Hives (user)'; Group = 3; Logs = $true
@@ -202,6 +319,10 @@ $artefacts = @(
            'Windows\System32\config\systemprofile\NTUSER.DAT'
            'Windows\ServiceProfiles\LocalService\NTUSER.DAT'
            'Windows\ServiceProfiles\NetworkService\NTUSER.DAT'
+           'Windows.old\Windows\System32\config\DEFAULT'
+           'Windows.old\Windows\System32\config\systemprofile\NTUSER.DAT'
+           'Windows.old\Windows\ServiceProfiles\LocalService\NTUSER.DAT'
+           'Windows.old\Windows\ServiceProfiles\NetworkService\NTUSER.DAT'
        )
        User = @(
            'NTUSER.DAT'
@@ -210,32 +331,67 @@ $artefacts = @(
     @{ Name = 'Startup Folders'; Group = 3
        System = 'ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp\**\*'
        User   = 'AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\**\*' }
+    # Teams client logs only (sign-ins, calls, meetings); no message stores or caches.
+    # New Teams (work/school), the Windows 11 built-in Teams, then classic Teams.
+    @{ Name = 'Teams Logs'; Group = 3; User = @(
+        'AppData\Local\Packages\MSTeams_8wekyb3d8bbwe\LocalCache\Microsoft\MSTeams\Logs\*'
+        'AppData\Local\Packages\MicrosoftTeams_8wekyb3d8bbwe\LocalCache\Microsoft\MSTeams\Logs\*'
+        'AppData\Roaming\Microsoft\Teams\logs.txt'                              # classic Teams
+    ) }
     # WER: only the .wer report metadata, never the crash dumps (bulk binary content).
     @{ Name = 'WER'; Group = 3
        System = 'ProgramData\Microsoft\Windows\WER\**\*.wer'
        User   = 'AppData\Local\Microsoft\Windows\WER\**\*.wer' }
+    # Windows Timeline (Windows 10; dropped in Windows 11).
+    @{ Name = 'Windows Timeline'; Group = 3; User = 'AppData\Local\ConnectedDevicesPlatform\**\ActivitiesCache.db*' }
 )
 
 # ============================= FUNCTIONS =============================
 
 # --- Filesystem enumeration (low-level first) ---
 
-# Full paths of the subfolders of Path matching Filter, skipping reparse points
-# (junctions such as "All Users" / "Default User" only duplicate real folders).
+# True if Path is a junction or symbolic link. Links are never followed: on
+# Windows they only duplicate real folders ("All Users", "Default User", the XP
+# compatibility links such as "Local Settings" or "Application Data" inside
+# profiles). Other reparse points (e.g. OneDrive cloud folders) are ordinary
+# folders. Results are cached, as the same folders are checked for many patterns.
+function Test-FolderLink {
+    param([string]$Path)
+    if ($script:linkCache.ContainsKey($Path)) { return $script:linkCache[$Path] }
+    $isLink = $false
+    try {
+        $type   = (Get-Item -LiteralPath $Path -Force -ErrorAction Stop).LinkType
+        $isLink = ($type -eq 'Junction' -or $type -eq 'SymbolicLink')
+    } catch {}
+    $script:linkCache[$Path] = $isLink
+    return $isLink
+}
+
+# Full paths of the subfolders of Path matching Filter, skipping links (see
+# Test-FolderLink).
 function Get-ChildDirectory {
     param([string]$Path, [string]$Filter = '*')
     try {
         Get-ChildItem -LiteralPath $Path -Filter $Filter -Directory -Force -ErrorAction SilentlyContinue |
-            Where-Object { -not ($_.Attributes -band [System.IO.FileAttributes]::ReparsePoint) } |
+            Where-Object { $_.LinkType -ne 'Junction' -and $_.LinkType -ne 'SymbolicLink' } |
             ForEach-Object { $_.FullName }
     } catch {}
+}
+
+# A folder path safe to list: a bare drive ('C:') means that drive's current
+# directory to PowerShell, so it becomes the drive root ('C:\').
+function Get-ListPath {
+    param([string]$Path)
+    if ($Path -match '^[A-Za-z]:$') { return $Path + '\' }
+    return $Path
 }
 
 # Expand a path pattern, relative to Root, into full file paths (none if absent).
 # Segments are separated by '\'. The last segment is a file-name filter (wildcards
 # allowed; a plain name matches just that file). A folder segment containing * or
 # ? matches subfolders; '**' as the last folder segment means "anywhere below
-# here" (recursive). -Literal returns Root\Pattern unchecked, without listing it.
+# here" (recursive). Links are never followed (see Test-FolderLink). -Literal
+# returns Root\Pattern unchecked, without listing it.
 function Resolve-PathPattern {
     param([string]$Root, [string]$Pattern, [switch]$Literal)
 
@@ -247,12 +403,17 @@ function Resolve-PathPattern {
     $recurse  = $false
     foreach ($seg in ($segments | Select-Object -SkipLast 1)) {
         if     ($seg -eq '**')      { $recurse = $true }
-        elseif ($seg -match '[*?]') { $dirs = @(foreach ($d in $dirs) { Get-ChildDirectory -Path $d -Filter $seg }) }
-        else                        { $dirs = @(foreach ($d in $dirs) { $d + '\' + $seg }) }
+        elseif ($seg -match '[*?]') { $dirs = @(foreach ($d in $dirs) { Get-ChildDirectory -Path (Get-ListPath -Path $d) -Filter $seg }) }
+        else {
+            $dirs = @(foreach ($d in $dirs) {
+                $next = $d + '\' + $seg
+                if (-not (Test-FolderLink -Path $next)) { $next }
+            })
+        }
     }
     foreach ($d in $dirs) {
         try {
-            Get-ChildItem -LiteralPath $d -Filter $segments[-1] -File -Force -Recurse:$recurse -ErrorAction SilentlyContinue |
+            Get-ChildItem -LiteralPath (Get-ListPath -Path $d) -Filter $segments[-1] -File -Force -Recurse:$recurse -ErrorAction SilentlyContinue |
                 ForEach-Object { $_.FullName }
         } catch {}
     }
@@ -270,12 +431,40 @@ function Get-RegistryValue {
     } catch {}
 }
 
-# User profiles: every folder under <sysDrive>\Users (deliberately not the
-# registry's ProfileList). Junctions there ("All Users", "Default User") are
-# skipped: they only lead back to folders already covered. Service accounts are
-# not profiles: rows list their paths explicitly.
+# User profiles: every folder under each profile root, in $profileRoots order
+# (deliberately not the registry's ProfileList). A root that is itself a link
+# (Documents and Settings -> Users on current Windows) is resolved to its target,
+# and only if that stays on the system drive, so no profile is listed twice.
+# Links inside a root ("All Users", "Default User") are skipped by
+# Get-ChildDirectory. Service accounts are not profiles: rows list their paths.
 function Get-UserProfilePath {
-    Get-ChildDirectory -Path (Join-Path $sysDrive 'Users')
+    $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    foreach ($r in $profileRoots) {
+        try {
+            $root = (Join-Path $sysDrive $r)
+            $item = Get-Item -LiteralPath $root -Force -ErrorAction Stop
+            if ($item.LinkType -eq 'Junction' -or $item.LinkType -eq 'SymbolicLink') {
+                $root = @($item.Target)[0]
+                if ($root -notlike "$sysDrive\*") { continue }
+            }
+            if ($seen.Add($root.TrimEnd('\'))) { Get-ChildDirectory -Path $root }
+        } catch {}
+    }
+}
+
+# Counting unit for CountBy 'Folder': the folder a match sits in at the pattern's
+# own depth (its folder segments before any '**'), counted from Root. E.g. the
+# browser profile folder for 'User Data\*\History*', or the History folder for
+# 'History\**\index.dat', however deep the file itself is.
+function Get-PatternUnit {
+    param([string]$Root, [string]$Pattern, [string]$Path)
+    $folders = @($Pattern -split '\\' | Select-Object -SkipLast 1)
+    $depth   = [array]::IndexOf($folders, '**')
+    if ($depth -lt 0) { $depth = $folders.Count }
+    $base = $Root.TrimEnd('\')
+    if ($depth -eq 0) { return $base }
+    $parts = @($Path.Substring($base.Length + 1) -split '\\')
+    return $base + '\' + (($parts | Select-Object -First $depth) -join '\')
 }
 
 # --- Zip ---
@@ -365,8 +554,8 @@ function Add-Artefact {
                         })
                     }
                     if ($Artefact.CountBy -eq 'Folder') {
-                        $folder = Split-Path -Path $file -Parent
-                        $units[$folder] = [bool]$units[$folder] -or $ok
+                        $unit = Get-PatternUnit -Root $s.Root -Pattern $pattern -Path $file
+                        $units[$unit] = [bool]$units[$unit] -or $ok
                     } else {
                         $tally.Candidates++
                         if ($ok) { $tally.Collected++ } else { $tally.Failed++ }
@@ -420,6 +609,7 @@ Write-Output ("Host {0}, started {1}" -f $hostName, $runStart.ToString("yyyy-MM-
 $script:added   = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
 $script:count   = 0                                                    # total files written to the zip
 $script:failed  = New-Object 'System.Collections.Generic.List[object]' # found but unreadable: Path, Scope, Literal, GetFile
+$script:linkCache = @{}                                                # folder path -> is a junction/symlink (Test-FolderLink)
 $script:summary = [ordered]@{}                                         # artefact name -> status, in display order
 
 # Fix the run order once: group, then name ignoring non-alphanumerics. Collection,
@@ -460,8 +650,10 @@ Register-DeleteOnReboot -Path $outDir
 
 Write-Output ''
 Write-Output 'Artefact summary:'
+# Name column sized to the longest artefact name, so the statuses line up.
+$nameWidth = ($script:summary.Keys | ForEach-Object { $_.Length } | Measure-Object -Maximum).Maximum
 foreach ($name in $script:summary.Keys) {
-    Write-Output ("  {0,-24} {1}" -f $name, $script:summary[$name])
+    Write-Output (("  {0,-" + $nameWidth + "} {1}") -f $name, $script:summary[$name])
 }
 
 $zipSize = ''
