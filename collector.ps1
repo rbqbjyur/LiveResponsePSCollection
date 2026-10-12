@@ -19,7 +19,7 @@ param()
 
 # ============================== CONFIG ==============================
 
-$CollectorVersion = '0.15.0'
+$CollectorVersion = '0.16.0'
 
 $ErrorActionPreference = 'SilentlyContinue'
 $ProgressPreference    = 'SilentlyContinue'
@@ -37,9 +37,6 @@ $timestamp = $runStart.ToString('yyyyMMdd_HHmmss') + 'Z'
 # separately-named zip in here, so repeated collections accumulate side by side.
 $outDir  = Join-Path $sysDrive 'LiveResponse'
 $zipPath = Join-Path $outDir "${hostName}_${timestamp}.zip"
-
-# Where Windows keeps user profiles (ProfilesDirectory, normally %SystemDrive%\Users).
-$profileListKey = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList'
 
 # Artefacts to collect: one row per summary line. Add an artefact by adding a row.
 #   Name     Summary label.
@@ -67,53 +64,148 @@ $artefacts = @(
     @{ Name = '$UsnJrnl:$J'; Group = 1; Literal = $true; System = '$Extend\$UsnJrnl:$J' }   # no getfile route
 
     # 2. Other system files.
-    @{ Name = 'EVTX';         Group = 2; System = 'Windows\System32\winevt\logs\*' }
-    @{ Name = 'Firewall Log'; Group = 2; System = 'Windows\System32\LogFiles\Firewall\pfirewall*.log' }   # logging off by default
-    @{ Name = 'Prefetch';     Group = 2; System = 'Windows\Prefetch\*.pf' }
+    # Program Compatibility Assistant execution records (Windows 11 22H2+).
+    @{ Name = 'AppCompat PCA'; Group = 2; System = 'Windows\appcompat\pca\*' }
+    # BITS job database (qmgr.db) and its ESE logs: downloads and persistence.
+    @{ Name = 'BITS';          Group = 2; System = 'ProgramData\Microsoft\Network\Downloader\**\*' }
+    # Defender text logs (MPLog etc.) and detection history; not the quarantine
+    # (payload). Defender event logs are already covered by EVTX.
+    @{ Name = 'Defender Logs'; Group = 2; System = @(
+        'ProgramData\Microsoft\Windows Defender\Support\**\*'
+        'ProgramData\Microsoft\Windows Defender\Scans\History\Service\DetectionHistory\**\*'
+        'ProgramData\Microsoft\Windows Defender\Scans\History\Service\Detections.log'
+        'Windows\Temp\MpCmdRun.log'
+    ) }
+    @{ Name = 'EVTX';          Group = 2; System = 'Windows\System32\winevt\logs\*.evtx' }
+    @{ Name = 'Firewall Log';  Group = 2; System = 'Windows\System32\LogFiles\Firewall\pfirewall.*' }   # logging off by default
+    @{ Name = 'Prefetch';      Group = 2; System = 'Windows\Prefetch\*.pf' }
     # Transaction logs hold un-flushed changes, so Registry Explorer / RegRipper /
-    # plaso can replay a dirty hive and recover the most recent entries.
+    # plaso can replay a dirty hive and recover the most recent entries. RegBack
+    # copies are usually empty on current Windows, but older snapshots when present.
     @{ Name = 'Registry Hives (system)'; Group = 2; Logs = $true; System = @(
         'Windows\System32\config\SAM'
         'Windows\System32\config\SECURITY'
         'Windows\System32\config\SOFTWARE'
         'Windows\System32\config\SYSTEM'
+        'Windows\System32\config\RegBack\SAM'
+        'Windows\System32\config\RegBack\SECURITY'
+        'Windows\System32\config\RegBack\SOFTWARE'
+        'Windows\System32\config\RegBack\SYSTEM'
+        'Windows\System32\config\RegBack\SYSTEM1'
         'Windows\AppCompat\Programs\Amcache.hve'
     ) }
-    @{ Name = 'Scheduled Tasks'; Group = 2; System = 'Windows\System32\Tasks\**\*' }       # XML task definitions
-    @{ Name = 'SetupAPI';        Group = 2; System = 'Windows\INF\setupapi*.log' }         # not legacy <windir>\setupapi.log
-    @{ Name = 'SRUM';            Group = 2; System = 'Windows\System32\SRU\SRUDB.dat' }
+    # XML task definitions, plus PowerShell scheduled jobs (definitions and output).
+    @{ Name = 'Scheduled Tasks'; Group = 2
+       System = @(
+           'Windows\System32\Tasks\**\*'
+           'Windows\SysWOW64\Tasks\**\*'
+           'Windows\System32\config\systemprofile\AppData\Local\Microsoft\Windows\PowerShell\ScheduledJobs\**\*'
+           'Windows\SysWOW64\config\systemprofile\AppData\Local\Microsoft\Windows\PowerShell\ScheduledJobs\**\*'
+       )
+       User = 'AppData\Local\Microsoft\Windows\PowerShell\ScheduledJobs\**\*' }
+    @{ Name = 'SetupAPI'; Group = 2; System = 'Windows\INF\setupapi*.log' }   # not legacy <windir>\setupapi.log
+    # SRUDB.dat plus its ESE logs and checkpoint, for dirty-database recovery.
+    @{ Name = 'SRUM';     Group = 2; System = 'Windows\System32\SRU\**\*' }
 
-    # 3. User-specific (Recycle Bin is per-SID under the drive root).
-    # Browser history: one pattern per browser; counted per user x browser x profile.
-    @{ Name = 'Browser History'; Group = 3; CountBy = 'Folder'; User = @(
-        'AppData\Local\Microsoft\Edge\User Data\*\History*'           # Edge
-        'AppData\Local\Google\Chrome\User Data\*\History*'            # Chrome
-        'AppData\Roaming\Mozilla\Firefox\Profiles\*\places.sqlite*'   # Firefox
-    ) }
+    # 3. User-specific. Service accounts (SYSTEM, LocalService, NetworkService) are
+    # not user profiles; where they matter, their paths are listed under System.
+    # .NET CLR usage logs: one log per process that loaded the CLR (e.g. .NET tooling).
+    @{ Name = '.NET CLR Usage Logs'; Group = 3
+       System = 'Windows\System32\config\systemprofile\AppData\Local\Microsoft\CLR_*\**\*.log'
+       User   = 'AppData\Local\Microsoft\CLR_*\**\*.log' }
+    # Browser history: maintained browsers, one pattern per browser (or channel),
+    # counted per user x browser x profile. History DB only (plus its journal).
+    @{ Name = 'Browser History'; Group = 3; CountBy = 'Folder'
+       System = @(
+           'Windows\System32\config\systemprofile\AppData\Local\Google\Chrome\User Data\*\History*'
+           'Windows\System32\config\systemprofile\AppData\Local\Google\Chrome Beta\User Data\*\History*'
+           'Windows\System32\config\systemprofile\AppData\Local\Google\Chrome Dev\User Data\*\History*'
+           'Windows\System32\config\systemprofile\AppData\Local\Google\Chrome SxS\User Data\*\History*'
+           'Windows\System32\config\systemprofile\AppData\Local\Chromium\User Data\*\History*'
+           'Windows\System32\config\systemprofile\AppData\Local\Palo Alto Networks\PrismaAccessBrowser\User Data\*\History*'
+           'Windows\System32\config\systemprofile\AppData\Local\Supermium\User Data\*\History*'
+           'Windows\System32\config\systemprofile\AppData\Local\WaveBrowser\User Data\*\History*'
+       )
+       User = @(
+           'AppData\Local\Microsoft\Edge\User Data\*\History*'                                   # Edge
+           'AppData\Local\Microsoft\Edge Beta\User Data\*\History*'                              # Edge Beta
+           'AppData\Local\Microsoft\Edge Dev\User Data\*\History*'                               # Edge Dev
+           'AppData\Local\Microsoft\Edge SxS\User Data\*\History*'                               # Edge Canary
+           'AppData\Local\Google\Chrome\User Data\*\History*'                                    # Chrome
+           'AppData\Local\Google\Chrome Beta\User Data\*\History*'                               # Chrome Beta
+           'AppData\Local\Google\Chrome Dev\User Data\*\History*'                                # Chrome Dev
+           'AppData\Local\Google\Chrome SxS\User Data\*\History*'                                # Chrome Canary
+           'AppData\Local\Chromium\User Data\*\History*'                                         # Chromium
+           'AppData\Local\BraveSoftware\Brave-Browser\User Data\*\History*'                      # Brave
+           'AppData\Local\Vivaldi\User Data\*\History*'                                          # Vivaldi
+           'AppData\Roaming\Opera Software\Opera Stable\History*'                                # Opera (single profile)
+           'AppData\Roaming\Opera Software\Opera Stable\*\History*'                              # Opera (profiles)
+           'AppData\Local\Yandex\YandexBrowser\User Data\*\History*'                             # Yandex
+           'AppData\Local\Packages\TheBrowserCompany.Arc_ttt1ap7aakyb4\LocalCache\Local\Arc\User Data\*\History*'   # Arc
+           'AppData\Local\CocCoc\Browser\User Data\*\History*'                                   # Coc Coc
+           'AppData\Local\Tencent\QQBrowser\User Data\*\History*'                                # QQ Browser
+           'AppData\Roaming\360se6\User Data\*\360History*'                                      # 360 Secure Browser
+           'AppData\Local\WaveBrowser\User Data\*\History*'                                      # Wave Browser
+           'AppData\Local\Palo Alto Networks\PrismaAccessBrowser\User Data\*\History*'           # Prisma Access Browser
+           'AppData\Local\Supermium\User Data\*\History*'                                        # Supermium
+           'AppData\Roaming\Mozilla\Firefox\Profiles\*\places.sqlite*'                           # Firefox
+       ) }
     # File History: metadata about backed-up files (only present when enabled).
-    @{ Name = 'File History';           Group = 3; User = 'AppData\Local\Microsoft\Windows\FileHistory\Configuration\Catalog*.edb' }
-    @{ Name = 'JumpLists';              Group = 3; User = 'AppData\Roaming\Microsoft\Windows\Recent\AutomaticDestinations\*.automaticDestinations-ms' }
-    @{ Name = 'LNK';                    Group = 3; User = 'AppData\Roaming\Microsoft\Windows\Recent\*.lnk' }
-    @{ Name = 'PowerShell History';     Group = 3; User = 'AppData\Roaming\Microsoft\Windows\PowerShell\PSReadline\ConsoleHost_history.txt' }
+    @{ Name = 'File History'; Group = 3; User = 'AppData\Local\Microsoft\Windows\FileHistory\Configuration\Catalog*.edb' }
+    @{ Name = 'JumpLists';    Group = 3; User = @(
+        'AppData\Roaming\Microsoft\Windows\Recent\AutomaticDestinations\*.automaticDestinations-ms'
+        'AppData\Roaming\Microsoft\Windows\Recent\CustomDestinations\*.customDestinations-ms'
+    ) }
+    # Shortcuts: recent files, Office recent, desktop and Start Menu (top level only).
+    @{ Name = 'LNK'; Group = 3
+       System = 'ProgramData\Microsoft\Windows\Start Menu\Programs\*.lnk'
+       User = @(
+           'AppData\Roaming\Microsoft\Windows\Recent\*.lnk'
+           'AppData\Roaming\Microsoft\Office\Recent\**\*'
+           'Desktop\*.lnk'
+           'AppData\Roaming\Microsoft\Windows\Start Menu\Programs\*.lnk'
+       ) }
+    # PSReadLine history for every host (console, VS Code, ...), including SYSTEM's.
+    @{ Name = 'PowerShell History'; Group = 3
+       System = @(
+           'Windows\System32\config\systemprofile\AppData\Roaming\Microsoft\Windows\PowerShell\PSReadLine\*_history.txt'
+           'Windows\SysWOW64\config\systemprofile\AppData\Roaming\Microsoft\Windows\PowerShell\PSReadLine\*_history.txt'
+       )
+       User = 'AppData\Roaming\Microsoft\Windows\PowerShell\PSReadLine\*_history.txt' }
     # Transcripts go to the user's Documents - possibly moved into OneDrive (Known
     # Folder Move) - directly or, with policy transcription, in date subfolders.
-    # Policy can also redirect them to a central folder (Windows PowerShell and PS 7).
+    # Policy can also redirect them to a central folder (Windows PowerShell and PS 7);
+    # System lists other places they are commonly found (SYSTEM runs, C:\PSTranscript).
     @{ Name = 'PowerShell Transcripts'; Group = 3
+       System = @(
+           'Windows\System32\*\PowerShell_transcript.*.txt'
+           'Windows\SysWOW64\*\PowerShell_transcript.*.txt'
+           'PSTranscript\20*\PowerShell_transcript.*.txt'
+       )
        User = @(
            'Documents\PowerShell_transcript.*.txt'
-           'Documents\*\PowerShell_transcript.*.txt'
+           'Documents\20*\PowerShell_transcript.*.txt'
            'OneDrive*\Documents\PowerShell_transcript.*.txt'
-           'OneDrive*\Documents\*\PowerShell_transcript.*.txt'
+           'OneDrive*\Documents\20*\PowerShell_transcript.*.txt'
        )
        RegDirs = @(
            @{ Key = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\Transcription'; Value = 'OutputDirectory'; Pattern = '**\PowerShell_transcript.*.txt' }
            @{ Key = 'HKLM:\SOFTWARE\Policies\Microsoft\PowerShellCore\Transcription';     Value = 'OutputDirectory'; Pattern = '**\PowerShell_transcript.*.txt' }
        ) }
-    @{ Name = 'Recycle Bin ($I)';       Group = 3; System = '$Recycle.Bin\*\$I*' }   # $I metadata only, no $R content
-    @{ Name = 'Registry Hives (user)';  Group = 3; Logs = $true; User = @(
-        'NTUSER.DAT'
-        'AppData\Local\Microsoft\Windows\UsrClass.dat'
-    ) }
+    @{ Name = 'Recycle Bin ($I)'; Group = 3; System = '$Recycle.Bin\*\$I*' }   # $I metadata only, no $R content
+    # User hives, plus the service accounts' hives: DEFAULT is the SYSTEM account's
+    # (HKU\.DEFAULT / S-1-5-18), the others LocalService and NetworkService.
+    @{ Name = 'Registry Hives (user)'; Group = 3; Logs = $true
+       System = @(
+           'Windows\System32\config\DEFAULT'
+           'Windows\System32\config\systemprofile\NTUSER.DAT'
+           'Windows\ServiceProfiles\LocalService\NTUSER.DAT'
+           'Windows\ServiceProfiles\NetworkService\NTUSER.DAT'
+       )
+       User = @(
+           'NTUSER.DAT'
+           'AppData\Local\Microsoft\Windows\UsrClass.dat'
+       ) }
     @{ Name = 'Startup Folders'; Group = 3
        System = 'ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp\**\*'
        User   = 'AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\**\*' }
@@ -177,13 +269,12 @@ function Get-RegistryValue {
     } catch {}
 }
 
-# User profiles: the folders under the profiles directory (from ProfileList, else
-# <sysDrive>\Users). Service/system accounts live under \Windows and so are
-# intentionally excluded.
+# User profiles: every folder under <sysDrive>\Users (deliberately not the
+# registry's ProfileList). Junctions there ("All Users", "Default User") are
+# skipped: they only lead back to folders already covered. Service accounts are
+# not profiles: rows list their paths explicitly.
 function Get-UserProfilePath {
-    $root = Get-RegistryValue -Path $profileListKey -Name 'ProfilesDirectory'
-    if (-not $root) { $root = Join-Path $sysDrive 'Users' }
-    Get-ChildDirectory -Path $root
+    Get-ChildDirectory -Path (Join-Path $sysDrive 'Users')
 }
 
 # --- Zip ---

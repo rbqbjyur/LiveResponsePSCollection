@@ -4,6 +4,27 @@ Notable changes to `collector.ps1`. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.16.0 - 2026-10-12
+
+### Added
+- Defender logs (Support logs, detection history), AppCompat PCA, BITS
+  database and .NET CLR usage logs.
+- Service-account artefacts: `DEFAULT`, systemprofile, LocalService and
+  NetworkService hives; SYSTEM's PowerShell history, scheduled jobs, CLR logs
+  and Chrome history.
+- History of other maintained browsers: Edge and Chrome Beta/Dev/Canary,
+  Chromium, Brave, Vivaldi, Opera, Yandex, Arc, Coc Coc, QQ, 360, Wave,
+  Prisma Access, Supermium.
+- RegBack hives; CustomDestinations JumpLists; Office recent, desktop and Start
+  Menu shortcuts; PowerShell scheduled jobs; `SysWOW64\Tasks`; SRUM ESE logs;
+  more transcript locations.
+
+### Changed
+- EVTX limited to `*.evtx`; firewall logs include rotated `pfirewall.log.old`;
+  PowerShell history covers every PSReadLine host (`*_history.txt`).
+- User profiles are again the folders under `<SystemDrive>\Users`; the 0.15.0
+  ProfilesDirectory lookup is removed.
+
 ## 0.15.0 - 2026-10-10
 
 ### Added
