@@ -84,7 +84,9 @@ timeline tooling.
   `csc.exe` (and usually `cvtres.exe`).
 - **Live Response limits.** `getfile` retrieves up to 3 GB per file, and slow
   links can time out first; `run` commands time out after 30 minutes. The
-  script doesn't split the zip or stop itself early.
+  script doesn't split the zip or stop itself early. `getfile` may deliver a
+  file gzip-wrapped (`.gz`); the zip inside is unchanged, so decompress the
+  `.gz` first.
 
 ## Quick start
 
