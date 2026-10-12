@@ -4,6 +4,23 @@ Notable changes to `collector.ps1`. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 1.0.1 - 2026-10-12
+
+### Fixed
+- A full system drive now stops collection, deletes the partial (unusable) zip
+  and says to free space and run again, instead of reporting every remaining
+  file as not accessible.
+- Recursive searches no longer follow junctions or symbolic links.
+- Browser History counts a profile as collected only if its main database was
+  read, not just its journal or logs.
+- A policy transcription folder at the system drive's root is skipped instead
+  of searching the whole drive.
+- Repeat runs no longer queue already-queued files for deletion again;
+  `%SystemDrive%` has a fallback; paths of 260+ characters can be opened.
+
+### Changed
+- Script header is now PowerShell comment-based help (`Get-Help`).
+
 ## 1.0.0 - 2026-10-12
 
 ### Added

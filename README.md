@@ -177,9 +177,9 @@ A Live Response run on a workstation; counts depend on the host.
 
 ```
 C:\> run collector.ps1
-Transcript started, output file is C:\ProgramData\Microsoft\Windows Defender Advanced Threat Protection\Temp\PSScriptOutputs\PSScript_Transcript_{BFA75E6F-120E-4623-AC9F-4708EC15019C}.txt
-Live Response collector v1.0.0
-Host WS042, started 2026-10-12T09:43:29Z
+Transcript started, output file is C:\ProgramData\Microsoft\Windows Defender Advanced Threat Protection\Temp\PSScriptOutputs\PSScript_Transcript_{1F421CC2-5B0D-46C5-96C0-1640C7484804}.txt
+Live Response collector v1.0.1
+Host WS042, started 2026-10-12T10:33:45Z
 [01/33] Collecting $LogFile
 [02/33] Collecting $MFT
 [03/33] Collecting $UsnJrnl:$J
@@ -234,7 +234,7 @@ Artefact summary:
   SRUM                      7 collected, 3 not accessible
   Syscache                  Missing
   User Access Logging (SUM) Missing
-  Browser History           10 collected
+  Browser History           9 collected, 1 not accessible
   File History Catalogs     Missing
   JumpLists                 48 collected
   LNK                       70 collected
@@ -245,12 +245,12 @@ Artefact summary:
   Recycle Bin ($I, INFO2)   6 collected
   Registry Hives (user)     27 collected, 15 not accessible
   Startup Folders           3 collected
-  Teams Logs                60 collected
+  Teams Logs                57 collected
   WER                       524 collected
   Windows Timeline          9 collected
 
-Collected 5900 files total (213.49 MB)
-Retrieve with: getfile "C:\LiveResponse\WS042_20261012_094329Z.zip"
+Collected 5897 files total (211.99 MB)
+Retrieve with: getfile "C:\LiveResponse\WS042_20261012_103345Z.zip"
 
 Additional inaccessible artefacts (locked from PowerShell - retrieve directly in this Live Response session):
 getfile "C:\$LogFile"

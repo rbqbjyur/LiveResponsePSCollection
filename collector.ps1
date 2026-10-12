@@ -1,14 +1,38 @@
 # SPDX-License-Identifier: 0BSD
 #Requires -Version 5.1
+
 <#
-    Live Response collector.
-    Upload to the Defender Live Response library, then:  run collector.ps1
-    Retrieve the zip path printed at the end with:       getfile <path>
+.SYNOPSIS
+    Collects timeline-relevant Windows triage artefacts into one zip, for
+    retrieval through Microsoft Defender for Endpoint (MDE) Live Response.
 
-    Best effort: anything that can't be read is skipped silently.
+.DESCRIPTION
+    Upload to the Defender Live Response library and run it on a device. It
+    writes <SystemDrive>\LiveResponse\<hostname>_<UTC timestamp>Z.zip, prints a
+    per-artefact summary, the getfile command for the zip, and getfile commands
+    for locked machine-wide files it could not read.
 
-    Version: $CollectorVersion below (semver). Changes are in CHANGELOG.md:
-    https://github.com/rbqbjyur/LiveResponsePSCollection/blob/main/CHANGELOG.md
+    Best effort: anything that can't be read is skipped silently and counted in
+    the summary; the run never stops on an error. The output folder is queued
+    for deletion at the next reboot.
+
+.EXAMPLE
+    run collector.ps1
+
+    In a Live Response session, after uploading the script to the library.
+
+.EXAMPLE
+    .\collector.ps1
+
+    From an elevated Windows PowerShell 5.1 prompt, e.g. for testing.
+
+.NOTES
+    Version: $CollectorVersion below (semver); changes are in CHANGELOG.md.
+    Requires Windows PowerShell 5.1; no modules, no network access.
+    License: 0BSD.
+
+.LINK
+    https://github.com/rbqbjyur/LiveResponsePSCollection
 #>
 
 # Every catch {} in this script is deliberate: failures are skipped and the run
@@ -19,7 +43,7 @@ param()
 
 # ============================== CONFIG ==============================
 
-$CollectorVersion = '1.0.0'
+$CollectorVersion = '1.0.1'
 
 $ErrorActionPreference = 'SilentlyContinue'
 $ProgressPreference    = 'SilentlyContinue'
@@ -27,6 +51,7 @@ $ProgressPreference    = 'SilentlyContinue'
 # Resolve the system drive from the environment so the script is not tied to a C:
 # install; every artefact path below is taken relative to it (or to a profile).
 $sysDrive = $env:SystemDrive                 # e.g. C:
+if (-not $sysDrive) { $sysDrive = [System.IO.Path]::GetPathRoot([Environment]::SystemDirectory).TrimEnd('\') }
 
 $hostName = $env:COMPUTERNAME
 # UTC, so the name is unambiguous across time zones; trailing 'Z' marks it as UTC.
@@ -55,6 +80,9 @@ $profileRoots = @('Users', 'Documents and Settings')
 #            command is printed at the end if the read failed.
 #   CountBy  'Folder' counts one unit per folder holding matches (e.g. per browser
 #            profile) instead of one per file.
+#   Supporting  CountBy rows: file-name patterns of supporting files (journals,
+#            ESE logs). A unit counts as collected only if its main file was read;
+#            supporting files alone don't count while a main file is present.
 #   RegDirs  Folders named by registry values (Key, Value), each searched with its
 #            Pattern. Local drive paths only: shares are skipped (no network access).
 # Within a row, patterns run from the modern, standard location to legacy and
@@ -191,6 +219,7 @@ $artefacts = @(
     # first, then IE / legacy Edge (WebCache, index.dat) and other discontinued
     # browsers or formats, then XP profile paths.
     @{ Name = 'Browser History'; Group = 3; CountBy = 'Folder'
+       Supporting = @('*-journal', '*-wal', '*-shm', '*Provider Cache', '*.log', '*.chk', '*.jrs', '*.jfm')
        System = @(
            'Windows\System32\config\systemprofile\AppData\Local\Google\Chrome\User Data\*\History*'
            'Windows\System32\config\systemprofile\AppData\Local\Google\Chrome Beta\User Data\*\History*'
@@ -386,6 +415,13 @@ function Get-ListPath {
     return $Path
 }
 
+# A folder and every folder below it, never following links (see Test-FolderLink).
+function Get-DirectoryTree {
+    param([string]$Path)
+    $Path
+    foreach ($d in (Get-ChildDirectory -Path (Get-ListPath -Path $Path))) { Get-DirectoryTree -Path $d }
+}
+
 # Expand a path pattern, relative to Root, into full file paths (none if absent).
 # Segments are separated by '\'. The last segment is a file-name filter (wildcards
 # allowed; a plain name matches just that file). A folder segment containing * or
@@ -411,9 +447,10 @@ function Resolve-PathPattern {
             })
         }
     }
+    if ($recurse) { $dirs = @(foreach ($d in $dirs) { Get-DirectoryTree -Path $d }) }
     foreach ($d in $dirs) {
         try {
-            Get-ChildItem -LiteralPath (Get-ListPath -Path $d) -Filter $segments[-1] -File -Force -Recurse:$recurse -ErrorAction SilentlyContinue |
+            Get-ChildItem -LiteralPath (Get-ListPath -Path $d) -Filter $segments[-1] -File -Force -ErrorAction SilentlyContinue |
                 ForEach-Object { $_.FullName }
         } catch {}
     }
@@ -469,9 +506,22 @@ function Get-PatternUnit {
 
 # --- Zip ---
 
+# True if an error (or any exception inside it) is "disk full" (ERROR_DISK_FULL,
+# ERROR_HANDLE_DISK_FULL), i.e. the zip can't grow - as opposed to a locked file.
+function Test-DiskFull {
+    param($ErrorRecord)
+    $e = $ErrorRecord.Exception
+    while ($e) {
+        if (($e.HResult -band 0xFFFF) -in 39, 112) { return $true }
+        $e = $e.InnerException
+    }
+    return $false
+}
+
 # Copy one file straight into the zip, opening it with shared access so files
 # held open by other processes (e.g. Edge History) can usually still be read.
 # Returns $true (copied), $false (found but unreadable) or $null (already in zip).
+# If the system drive fills up, sets $script:diskFull so collection stops.
 function Add-FileToZip {
     param($Zip, [string]$Path)
 
@@ -481,20 +531,24 @@ function Add-FileToZip {
 
     $src = $null
     $dst = $null
+    # Paths of 260+ characters need the \\?\ prefix to open (where they could be listed).
+    $openPath = if ($Path.Length -ge 260) { '\\?\' + $Path } else { $Path }
     try {
-        $src = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]'ReadWrite, Delete')
+        $src = [System.IO.File]::Open($openPath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]'ReadWrite, Delete')
         $entry = $Zip.CreateEntry($entryName, [System.IO.Compression.CompressionLevel]::Fastest)
         # UTC: zip stores a zone-less date/time, so keep it in the always-UTC convention.
-        try { $entry.LastWriteTime = [System.IO.File]::GetLastWriteTimeUtc($Path) } catch {}
+        try { $entry.LastWriteTime = [System.IO.File]::GetLastWriteTimeUtc($openPath) } catch {}
         $dst = $entry.Open()
         $src.CopyTo($dst)
         $script:count++
         return $true
     } catch {
-        return $false   # locked / access denied
+        if (Test-DiskFull -ErrorRecord $_) { $script:diskFull = $true }
+        return $false   # locked / access denied (or disk full: see above)
     } finally {
-        if ($dst) { $dst.Dispose() }
-        if ($src) { $src.Dispose() }
+        # Closing can fail too (e.g. disk full while flushing the entry): never let it escape.
+        if ($dst) { try { $dst.Dispose() } catch {} }
+        if ($src) { try { $src.Dispose() } catch {} }
     }
 }
 
@@ -532,20 +586,26 @@ function Add-Artefact {
     foreach ($p in $Artefact.System) { $sources += @{ Root = $sysDrive; Scope = 'System'; Pattern = $p } }
     foreach ($rd in $Artefact.RegDirs) {
         $dir = Get-RegistryValue -Path $rd.Key -Name $rd.Value
-        # Local drive paths only (e.g. D:\Transcripts): skips shares and relative paths.
-        if ($dir -match '^[A-Za-z]:\\') { $sources += @{ Root = $dir; Scope = 'System'; Pattern = $rd.Pattern } }
+        # Absolute local drive paths only (any letter): skips shares and relative paths.
+        # Also skips the root of the system drive ($sysDrive, from %SystemDrive%), as a
+        # recursive search would walk the whole drive; another drive's root is fine -
+        # small partitions are sometimes set aside for transcripts.
+        if ($dir -match '^[A-Za-z]:\\' -and $dir.TrimEnd('\') -ne $sysDrive) {
+            $sources += @{ Root = $dir; Scope = 'System'; Pattern = $rd.Pattern }
+        }
     }
     foreach ($u in $UserProfile) {
         foreach ($p in $Artefact.User) { $sources += @{ Root = $u; Scope = 'User'; Pattern = $p } }
     }
 
-    foreach ($s in $sources) {
+    :sources foreach ($s in $sources) {
         try {
             $patterns = @($s.Pattern)
             if ($Artefact.Logs) { $patterns += $s.Pattern + '.LOG*' }   # hive first, then its logs
             foreach ($pattern in $patterns) {
                 foreach ($file in (Resolve-PathPattern -Root $s.Root -Pattern $pattern -Literal:([bool]$Artefact.Literal))) {
                     $ok = Add-FileToZip -Zip $Zip -Path $file
+                    if ($script:diskFull) { $script:diskFullAt = $Artefact.Name; break sources }   # zip can't grow: stop
                     if ($null -eq $ok) { continue }   # already collected
                     if (-not $ok) {
                         $script:failed.Add([pscustomobject]@{
@@ -555,7 +615,13 @@ function Add-Artefact {
                     }
                     if ($Artefact.CountBy -eq 'Folder') {
                         $unit = Get-PatternUnit -Root $s.Root -Pattern $pattern -Path $file
-                        $units[$unit] = [bool]$units[$unit] -or $ok
+                        if (-not $units.ContainsKey($unit)) { $units[$unit] = @{ Main = $null; Any = $false } }
+                        $leaf = Split-Path -Path $file -Leaf
+                        if (@($Artefact.Supporting | Where-Object { $leaf -like $_ }).Count -gt 0) {
+                            $units[$unit].Any = $units[$unit].Any -or $ok
+                        } else {
+                            $units[$unit].Main = ($units[$unit].Main -eq $true) -or $ok
+                        }
                     } else {
                         $tally.Candidates++
                         if ($ok) { $tally.Collected++ } else { $tally.Failed++ }
@@ -566,8 +632,10 @@ function Add-Artefact {
     }
 
     if ($Artefact.CountBy -eq 'Folder') {
+        # Collected if the main file was read; supporting files only decide when a
+        # unit has no main file at all (e.g. a lone journal).
         $tally.Candidates = $units.Count
-        $tally.Collected  = @($units.Values | Where-Object { $_ }).Count
+        $tally.Collected  = @($units.Values | Where-Object { $_.Main -eq $true -or ($null -eq $_.Main -and $_.Any) }).Count
         $tally.Failed     = $tally.Candidates - $tally.Collected
     }
     $script:summary[$Artefact.Name] = Format-Status @tally
@@ -575,10 +643,14 @@ function Add-Artefact {
 
 # --- Cleanup ---
 
-# MoveFileEx with a null destination + MOVEFILE_DELAY_UNTIL_REBOOT (0x4) queues a
-# path for deletion on next boot via the PendingFileRenameOperations registry key.
+# Queue the output folder for deletion at next boot: MoveFileEx with a null
+# destination + MOVEFILE_DELAY_UNTIL_REBOOT (0x4) appends to the
+# PendingFileRenameOperations registry value, processed in order at boot. Files go
+# first (a folder is only removed once empty); files an earlier run already queued
+# are skipped, so repeat runs don't pile up duplicates, while a file left behind
+# by an earlier failed cleanup is picked up again. The folder itself goes last.
 function Register-DeleteOnReboot {
-    param([string]$Path)
+    param([string]$Folder)
     try {
         if (-not ('LR.Native' -as [type])) {
             Add-Type -Namespace LR -Name Native -ErrorAction Stop -MemberDefinition @'
@@ -586,16 +658,19 @@ function Register-DeleteOnReboot {
 public static extern bool MoveFileEx(string lpExistingFileName, string lpNewFileName, int dwFlags);
 '@
         }
-        # Files first, then directories deepest-first, then the root: the queue is
-        # processed in order, and a directory is only removed once it is empty.
+        $pending = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+        try {
+            $key = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager'
+            foreach ($entry in (Get-ItemProperty -LiteralPath $key -Name PendingFileRenameOperations -ErrorAction Stop).PendingFileRenameOperations) {
+                if ($entry) { [void]$pending.Add($entry -replace '^\\\?\?\\', '') }
+            }
+        } catch {}
         # [NullString]::Value, not $null: PowerShell turns $null into "" for a
         # .NET string argument, and MoveFileEx only queues a delete for a true null.
-        Get-ChildItem -LiteralPath $Path -Recurse -Force -File -ErrorAction SilentlyContinue |
+        Get-ChildItem -LiteralPath $Folder -Recurse -Force -File -ErrorAction SilentlyContinue |
+            Where-Object { -not $pending.Contains($_.FullName) } |
             ForEach-Object { [LR.Native]::MoveFileEx($_.FullName, [NullString]::Value, 4) | Out-Null }
-        Get-ChildItem -LiteralPath $Path -Recurse -Force -Directory -ErrorAction SilentlyContinue |
-            Sort-Object -Property { $_.FullName.Length } -Descending |
-            ForEach-Object { [LR.Native]::MoveFileEx($_.FullName, [NullString]::Value, 4) | Out-Null }
-        [LR.Native]::MoveFileEx($Path, [NullString]::Value, 4) | Out-Null
+        [LR.Native]::MoveFileEx($Folder, [NullString]::Value, 4) | Out-Null
     } catch {}
 }
 
@@ -610,6 +685,8 @@ $script:added   = New-Object 'System.Collections.Generic.HashSet[string]' ([Stri
 $script:count   = 0                                                    # total files written to the zip
 $script:failed  = New-Object 'System.Collections.Generic.List[object]' # found but unreadable: Path, Scope, Literal, GetFile
 $script:linkCache = @{}                                                # folder path -> is a junction/symlink (Test-FolderLink)
+$script:diskFull  = $false                                             # set when the system drive fills up (Test-DiskFull)
+$script:diskFullAt = ''                                                # artefact being collected when it did
 $script:summary = [ordered]@{}                                         # artefact name -> status, in display order
 
 # Fix the run order once: group, then name ignoring non-alphanumerics. Collection,
@@ -636,15 +713,32 @@ try {
 try {
     $userProfiles = @(Get-UserProfilePath)
     foreach ($a in $artefacts) {
+        if ($script:diskFull) { break }
         try { Add-Artefact -Zip $zip -Artefact $a -UserProfile $userProfiles } catch {}
     }
 } finally {
-    if ($zip) { $zip.Dispose() }
+    if ($zip) { try { $zip.Dispose() } catch {} }   # writes the zip's index; can fail if the disk is full
 }
 
-# Fallback cleanup: if the folder is never removed manually, it (and everything
-# in it) is deleted at the next reboot. getfile still works until then.
-Register-DeleteOnReboot -Path $outDir
+# Disk full: the zip is partial (and its index may not have been written), so it
+# is useless. Delete it, tell the analyst, and stop - they free space and re-run.
+if ($script:diskFull) {
+    try { Remove-Item -LiteralPath $zipPath -Force -ErrorAction Stop } catch {}
+    Register-DeleteOnReboot -Folder $outDir
+    Write-Output ''
+    Write-Output "Collection stopped while collecting $($script:diskFullAt): $sysDrive is full."
+    if (Test-Path -LiteralPath $zipPath) {
+        Write-Output "The partial zip could not be deleted; it is unusable and queued for deletion at reboot."
+    } else {
+        Write-Output 'The partial zip was deleted.'
+    }
+    Write-Output "Free up space on $sysDrive and run the collector again."
+    return
+}
+
+# Fallback cleanup: the output folder and its zips are deleted at the next reboot.
+# getfile still works until then.
+Register-DeleteOnReboot -Folder $outDir
 
 # --- Output: summary, zip location, and runnable retrieval commands ---
 
