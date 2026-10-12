@@ -19,7 +19,7 @@ param()
 
 # ============================== CONFIG ==============================
 
-$CollectorVersion = '0.16.0'
+$CollectorVersion = '0.16.1'
 
 $ErrorActionPreference = 'SilentlyContinue'
 $ProgressPreference    = 'SilentlyContinue'
@@ -69,7 +69,7 @@ $artefacts = @(
     # BITS job database (qmgr.db) and its ESE logs: downloads and persistence.
     @{ Name = 'BITS';          Group = 2; System = 'ProgramData\Microsoft\Network\Downloader\**\*' }
     # Defender text logs (MPLog etc.) and detection history; not the quarantine
-    # (payload). Defender event logs are already covered by EVTX.
+    # (file content). Defender event logs are already covered by EVTX.
     @{ Name = 'Defender Logs'; Group = 2; System = @(
         'ProgramData\Microsoft\Windows Defender\Support\**\*'
         'ProgramData\Microsoft\Windows Defender\Scans\History\Service\DetectionHistory\**\*'
@@ -150,8 +150,9 @@ $artefacts = @(
            'AppData\Local\Supermium\User Data\*\History*'                                        # Supermium
            'AppData\Roaming\Mozilla\Firefox\Profiles\*\places.sqlite*'                           # Firefox
        ) }
-    # File History: metadata about backed-up files (only present when enabled).
-    @{ Name = 'File History'; Group = 3; User = 'AppData\Local\Microsoft\Windows\FileHistory\Configuration\Catalog*.edb' }
+    # File History catalogs (Catalog1/2.edb): metadata about backed-up files, not
+    # the files themselves; only present when File History is enabled.
+    @{ Name = 'File History Catalogs'; Group = 3; User = 'AppData\Local\Microsoft\Windows\FileHistory\Configuration\Catalog*.edb' }
     @{ Name = 'JumpLists';    Group = 3; User = @(
         'AppData\Roaming\Microsoft\Windows\Recent\AutomaticDestinations\*.automaticDestinations-ms'
         'AppData\Roaming\Microsoft\Windows\Recent\CustomDestinations\*.customDestinations-ms'
@@ -209,7 +210,7 @@ $artefacts = @(
     @{ Name = 'Startup Folders'; Group = 3
        System = 'ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp\**\*'
        User   = 'AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\**\*' }
-    # WER: only the .wer report metadata, never the crash dumps (binary payload).
+    # WER: only the .wer report metadata, never the crash dumps (bulk binary content).
     @{ Name = 'WER'; Group = 3
        System = 'ProgramData\Microsoft\Windows\WER\**\*.wer'
        User   = 'AppData\Local\Microsoft\Windows\WER\**\*.wer' }

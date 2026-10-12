@@ -13,6 +13,11 @@ timeline-relevant forensic artefacts (artifacts) - no binaries to upload.
   script gathers them into one zip in a single `run`, so you need one `getfile`
   (plus a short, printed list of ready-to-paste commands for the few locked
   files it can't read).
+- **Full collectors need binaries and supporting files.** Staging KAPE or a
+  Velociraptor collector through Live Response means uploading and running
+  executables, which is not always possible or permitted. A multi-file toolkit
+  can collect more; this script aims to do as much as one script can, for when
+  a script is all you can run.
 - **The built-in investigation package falls short for timelining.** Defender's
   *Collect investigation package* is a point-in-time snapshot of system state
   (processes, services, network connections, autoruns), much of it exported as
@@ -37,10 +42,10 @@ A deliberately small, timeline-oriented triage set rather than a full sweep:
   execution, file access, persistence, device use, browsing and command-line
   activity.
 - **Windows-native sources.** Third-party application artefacts are out of
-  scope; mainstream browser history is the exception.
-- **Metadata over payload.** E.g. `$I` records rather than `$R` content, `.wer`
-  reports rather than dumps, keeping the zip practical to pull over Live
-  Response.
+  scope; browser history is the exception.
+- **Metadata over content.** E.g. `$I` records rather than the deleted `$R`
+  files, `.wer` reports rather than memory dumps, browser history rather than
+  caches, keeping the zip practical to pull over Live Response.
 
 Everything is collected raw, for processing with your usual parsers and
 timeline tooling.
@@ -55,6 +60,7 @@ timeline tooling.
   [What it can't collect](#what-it-cant-collect)).
 - **Single pass.** Files are streamed straight into the zip
   (`System.IO.Compression`, fastest compression) with no temporary copies.
+  Zip entry times are each file's last-write time in UTC.
 - **Output location.** `C:\LiveResponse\`, marked Hidden + System to keep it
   out of the user's view. Each run adds a new `<HOSTNAME>_<UTC timestamp>Z.zip`.
   The folder is queued for deletion at the next reboot.
@@ -87,39 +93,41 @@ certificate (re-sign after every change).
 
 ## What it collects
 
-These are the locations it attempts. Anything locked is skipped (see below).
-`<user>` means every folder under `C:\Users`.
-Service accounts (SYSTEM, LocalService, NetworkService) are not `<user>`: their
-locations are listed explicitly, with `<sysprof>` meaning
-`C:\Windows\System32\config\systemprofile`. Paths are resolved from
-`%SystemDrive%`, so non-`C:` installs work too. Inside the zip, files keep their
-original path (e.g. `C/Windows/Prefetch/...`).
+These are the locations it attempts, in the order the script runs them (the
+NTFS metafiles that open the summary are covered under
+[What it can't collect](#what-it-cant-collect)). Anything locked is skipped.
 
-| Category | Artefact | Location |
-|---|---|---|
-| **Logs** | EVTX | `C:\Windows\System32\winevt\logs\*.evtx` |
-| | Defender Logs | `C:\ProgramData\Microsoft\Windows Defender\Support\` and `...\Scans\History\Service\DetectionHistory\` (recursive), `...\Scans\History\Service\Detections.log`, `C:\Windows\Temp\MpCmdRun.log` |
-| | Firewall Log | `C:\Windows\System32\LogFiles\Firewall\pfirewall.*` |
-| | SetupAPI | `C:\Windows\INF\setupapi*.log` |
-| **Execution** | Prefetch | `C:\Windows\Prefetch\*.pf` |
-| | AppCompat PCA | `C:\Windows\appcompat\pca\*` |
-| | SRUM | `C:\Windows\System32\SRU\` (recursive: `SRUDB.dat` and its ESE logs) |
-| | .NET CLR Usage Logs | `*.log` under `<user>\AppData\Local\Microsoft\CLR_*\` and `<sysprof>\AppData\Local\Microsoft\CLR_*\` |
-| | PowerShell History | `*_history.txt` in `<user>\AppData\Roaming\Microsoft\Windows\PowerShell\PSReadLine\`, and the same under `<sysprof>` (System32 and SysWOW64) |
-| | PowerShell Transcripts | `PowerShell_transcript.*.txt` in `<user>\Documents\` and `<user>\OneDrive*\Documents\` (and their `20*` dated subfolders), `C:\Windows\{System32,SysWOW64}\*\`, `C:\PSTranscript\20*\`; a policy transcription folder on a local drive (recursive) |
-| **Registry** | System hives | `SAM`, `SECURITY`, `SOFTWARE`, `SYSTEM` in `C:\Windows\System32\config\` and `config\RegBack\` (plus `SYSTEM1`); `C:\Windows\AppCompat\Programs\Amcache.hve` |
-| | User hives | `<user>\NTUSER.DAT`, `<user>\AppData\Local\Microsoft\Windows\UsrClass.dat`; service accounts: `C:\Windows\System32\config\DEFAULT`, `<sysprof>\NTUSER.DAT`, `C:\Windows\ServiceProfiles\{LocalService,NetworkService}\NTUSER.DAT` |
-| | Transaction logs | `.LOG1`/`.LOG2` alongside each hive above |
-| **Persistence** | Scheduled Tasks | `C:\Windows\{System32,SysWOW64}\Tasks\`; PowerShell scheduled jobs in `<user>\AppData\Local\Microsoft\Windows\PowerShell\ScheduledJobs\` and the same under `<sysprof>` (all recursive) |
-| | BITS | `C:\ProgramData\Microsoft\Network\Downloader\` (recursive) |
-| | Startup Folders | `C:\ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp\`, `<user>\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\` (recursive) |
-| **File and folder access** | LNK | `<user>\AppData\Roaming\Microsoft\Windows\Recent\*.lnk`, `<user>\AppData\Roaming\Microsoft\Office\Recent\` (recursive), `<user>\Desktop\*.lnk`, `Start Menu\Programs\*.lnk` (user and `C:\ProgramData`, top level) |
-| | JumpLists | `<user>\AppData\Roaming\Microsoft\Windows\Recent\AutomaticDestinations\*.automaticDestinations-ms`, `...\Recent\CustomDestinations\*.customDestinations-ms` |
-| | Recycle Bin | `C:\$Recycle.Bin\<SID>\$I*` |
-| | File History | `<user>\AppData\Local\Microsoft\Windows\FileHistory\Configuration\Catalog*.edb` |
-| **Browsing** | Chromium-based: Edge and Chrome (incl. Beta, Dev, Canary), Chromium, Brave, Vivaldi, Opera, Yandex, Arc, Coc Coc, QQ Browser, 360 Secure Browser, Wave Browser, Prisma Access Browser, Supermium | `History*` (360: `360History*`) in each browser's `User Data\<profile>\` under `<user>`; Chrome channels, Chromium, Prisma Access, Supermium and Wave also under `<sysprof>` |
-| | Firefox | `<user>\AppData\Roaming\Mozilla\Firefox\Profiles\<profile>\places.sqlite*` |
-| **Crashes** | WER | `*.wer` under `C:\ProgramData\Microsoft\Windows\WER\` and `<user>\AppData\Local\Microsoft\Windows\WER\` |
+- `<user>` is every folder under `C:\Users`.
+- `<sysprof>` is `C:\Windows\System32\config\systemprofile` (the SYSTEM
+  account). Service accounts are not `<user>`; their locations are listed
+  explicitly.
+- `<profile>` is any browser profile folder.
+- Paths are resolved from `%SystemDrive%`, so non-`C:` installs work too.
+  Inside the zip, files keep their original path (e.g. `C/Windows/Prefetch/...`).
+
+| Artefact | Location |
+|---|---|
+| AppCompat PCA | `C:\Windows\appcompat\pca\*` |
+| BITS | `C:\ProgramData\Microsoft\Network\Downloader\` (recursive) |
+| Defender Logs | `C:\ProgramData\Microsoft\Windows Defender\Support\` (recursive)<br>`C:\ProgramData\Microsoft\Windows Defender\Scans\History\Service\DetectionHistory\` (recursive)<br>`C:\ProgramData\Microsoft\Windows Defender\Scans\History\Service\Detections.log`<br>`C:\Windows\Temp\MpCmdRun.log` |
+| EVTX | `C:\Windows\System32\winevt\logs\*.evtx` |
+| Firewall Log | `C:\Windows\System32\LogFiles\Firewall\pfirewall.*` |
+| Prefetch | `C:\Windows\Prefetch\*.pf` |
+| Registry Hives (system) | `C:\Windows\System32\config\{SAM,SECURITY,SOFTWARE,SYSTEM}`<br>`C:\Windows\System32\config\RegBack\{SAM,SECURITY,SOFTWARE,SYSTEM,SYSTEM1}`<br>`C:\Windows\AppCompat\Programs\Amcache.hve`<br>each with its `.LOG1`/`.LOG2` |
+| Scheduled Tasks | `C:\Windows\{System32,SysWOW64}\Tasks\` (recursive)<br>`<user>\AppData\Local\Microsoft\Windows\PowerShell\ScheduledJobs\` (recursive)<br>`C:\Windows\{System32,SysWOW64}\config\systemprofile\AppData\Local\Microsoft\Windows\PowerShell\ScheduledJobs\` (recursive) |
+| SetupAPI | `C:\Windows\INF\setupapi*.log` |
+| SRUM | `C:\Windows\System32\SRU\` (recursive: `SRUDB.dat` and its ESE logs) |
+| Browser History | `<user>\AppData\Local\Microsoft\{Edge,Edge Beta,Edge Dev,Edge SxS}\User Data\<profile>\History*`<br>`<user>\AppData\Local\Google\{Chrome,Chrome Beta,Chrome Dev,Chrome SxS}\User Data\<profile>\History*`<br>`<user>\AppData\Local\{Chromium,Vivaldi,Supermium,WaveBrowser}\User Data\<profile>\History*`<br>`<user>\AppData\Local\BraveSoftware\Brave-Browser\User Data\<profile>\History*`<br>`<user>\AppData\Local\Yandex\YandexBrowser\User Data\<profile>\History*`<br>`<user>\AppData\Local\CocCoc\Browser\User Data\<profile>\History*`<br>`<user>\AppData\Local\Tencent\QQBrowser\User Data\<profile>\History*`<br>`<user>\AppData\Local\Palo Alto Networks\PrismaAccessBrowser\User Data\<profile>\History*`<br>`<user>\AppData\Local\Packages\TheBrowserCompany.Arc_ttt1ap7aakyb4\LocalCache\Local\Arc\User Data\<profile>\History*`<br>`<user>\AppData\Roaming\Opera Software\Opera Stable\History*` and `...\Opera Stable\<profile>\History*`<br>`<user>\AppData\Roaming\360se6\User Data\<profile>\360History*`<br>`<user>\AppData\Roaming\Mozilla\Firefox\Profiles\<profile>\places.sqlite*`<br>`<sysprof>\AppData\Local\` paths for Chrome (all channels), Chromium, Prisma Access, Supermium and Wave |
+| File History Catalogs | `<user>\AppData\Local\Microsoft\Windows\FileHistory\Configuration\Catalog*.edb` |
+| JumpLists | `<user>\AppData\Roaming\Microsoft\Windows\Recent\AutomaticDestinations\*.automaticDestinations-ms`<br>`<user>\AppData\Roaming\Microsoft\Windows\Recent\CustomDestinations\*.customDestinations-ms` |
+| LNK | `<user>\AppData\Roaming\Microsoft\Windows\Recent\*.lnk`<br>`<user>\AppData\Roaming\Microsoft\Office\Recent\` (recursive)<br>`<user>\Desktop\*.lnk`<br>`<user>\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\*.lnk`<br>`C:\ProgramData\Microsoft\Windows\Start Menu\Programs\*.lnk` |
+| .NET CLR Usage Logs | `<user>\AppData\Local\Microsoft\CLR_*\` (recursive, `*.log`)<br>`<sysprof>\AppData\Local\Microsoft\CLR_*\` (recursive, `*.log`) |
+| PowerShell History | `<user>\AppData\Roaming\Microsoft\Windows\PowerShell\PSReadLine\*_history.txt`<br>`C:\Windows\{System32,SysWOW64}\config\systemprofile\AppData\Roaming\Microsoft\Windows\PowerShell\PSReadLine\*_history.txt` |
+| PowerShell Transcripts | `<user>\Documents\PowerShell_transcript.*.txt` and `<user>\Documents\20*\PowerShell_transcript.*.txt`<br>`<user>\OneDrive*\Documents\PowerShell_transcript.*.txt` and `...\Documents\20*\PowerShell_transcript.*.txt`<br>`C:\Windows\{System32,SysWOW64}\*\PowerShell_transcript.*.txt`<br>`C:\PSTranscript\20*\PowerShell_transcript.*.txt`<br>the policy transcription folder, if on a local drive (recursive) |
+| Recycle Bin ($I) | `C:\$Recycle.Bin\<SID>\$I*` |
+| Registry Hives (user) | `<user>\NTUSER.DAT`<br>`<user>\AppData\Local\Microsoft\Windows\UsrClass.dat`<br>`C:\Windows\System32\config\DEFAULT` (SYSTEM)<br>`<sysprof>\NTUSER.DAT`<br>`C:\Windows\ServiceProfiles\{LocalService,NetworkService}\NTUSER.DAT`<br>each with its `.LOG1`/`.LOG2` |
+| Startup Folders | `C:\ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp\` (recursive)<br>`<user>\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\` (recursive) |
+| WER | `C:\ProgramData\Microsoft\Windows\WER\` (recursive, `*.wer`)<br>`<user>\AppData\Local\Microsoft\Windows\WER\` (recursive, `*.wer`) |
 
 ## What it can't collect
 
@@ -133,12 +141,13 @@ them, the script prints a ready-to-paste `getfile` command at the end.
 | `$LogFile` | NTFS metafile | `getfile` (printed) |
 | `$UsnJrnl:$J` | NTFS metafile (ADS) | Not possible via `getfile`; needs a raw-NTFS collector |
 | System hives (`SAM`, `SECURITY`, `SOFTWARE`, `SYSTEM`) and their transaction logs | Held exclusively by the kernel while loaded | `getfile` for the hives (printed) |
-| SRUM (`SRUDB.dat`) | Often held open by the system (collected when it isn't) | `getfile` (printed) |
 | Service account hives (`DEFAULT`, LocalService and NetworkService `NTUSER.DAT`) and their transaction logs | Loaded while Windows runs | `getfile` for the hives (printed) |
 | User hives of logged-on users (`NTUSER.DAT`, `UsrClass.dat`) and their transaction logs | Held exclusively while the user is logged on | `getfile` manually (not printed, to keep the list short) |
 
-Hives of users who are not logged on, and most other in-use files (EVTX, a
-running browser's History), are collected normally.
+Hives of users who are not logged on, and most other in-use files (EVTX, SRUM,
+a running browser's History), are collected normally. If any other
+machine-wide file turns out to be locked, it is added to the printed `getfile`
+list (transaction logs excepted).
 
 ## Example output
 
@@ -148,7 +157,7 @@ host.
 ```
 C:\> run collector.ps1
 Transcript started, output file is C:\ProgramData\Microsoft\Windows Defender Advanced Threat Protection\Temp\PSScriptOutputs\PSScript_Transcript_{7A927308-4292-462A-853C-A1A9054005D6}.txt
-Live Response collector v0.16.0
+Live Response collector v0.16.1
 Host WS042, started 2026-10-12T07:56:16Z
 [01/24] Collecting $LogFile
 [02/24] Collecting $MFT
@@ -164,7 +173,7 @@ Host WS042, started 2026-10-12T07:56:16Z
 [12/24] Collecting SetupAPI
 [13/24] Collecting SRUM
 [14/24] Collecting Browser History
-[15/24] Collecting File History
+[15/24] Collecting File History Catalogs
 [16/24] Collecting JumpLists
 [17/24] Collecting LNK
 [18/24] Collecting .NET CLR Usage Logs
@@ -190,7 +199,7 @@ Artefact summary:
   SetupAPI                 15 collected
   SRUM                     19 collected
   Browser History          2 collected
-  File History             Missing
+  File History Catalogs    Missing
   JumpLists                46 collected
   LNK                      483 collected
   .NET CLR Usage Logs      2 collected

@@ -4,6 +4,11 @@ Notable changes to `collector.ps1`. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.16.1 - 2026-10-12
+
+### Changed
+- Summary line "File History" renamed "File History Catalogs".
+
 ## 0.16.0 - 2026-10-12
 
 ### Added
