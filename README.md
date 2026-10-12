@@ -36,7 +36,7 @@ Collector.
 
 ## Approach
 
-A deliberately small, timeline-oriented triage set rather than a full sweep:
+A focused, timeline-oriented triage set rather than a full sweep:
 
 - **Timeline value first.** Artefacts are chosen for timestamped evidence of
   execution, file access, persistence, device use, browsing and command-line
@@ -59,16 +59,19 @@ timeline tooling.
 
 - **Requirements:** Windows PowerShell 5.1.
 - **Best effort.** Anything that can't be read is skipped and counted in the
-  summary; the run never stops on an error. There is no log file.
+  summary; the run never stops on an error, except a full system drive: it
+  stops, deletes the partial zip and asks you to free space and re-run. There is
+  no log file.
 - **Locked files.** Files are opened with shared read access, so in-use files
   are copied where Windows allows it. Files held exclusively are skipped (see
   [What it can't collect](#what-it-cant-collect)).
 - **Single pass.** Files are streamed straight into the zip
   (`System.IO.Compression`, fastest compression) with no temporary copies.
   Zip entry times are each file's last-write time in UTC.
-- **Output location.** `C:\LiveResponse\`, marked Hidden + System to keep it
-  out of the user's view. Each run adds a new `<HOSTNAME>_<UTC timestamp>Z.zip`.
-  The folder is queued for deletion at the next reboot.
+- **Output location.** `%SystemDrive%\LiveResponse\` (normally `C:\`), marked
+  Hidden + System to keep it out of the user's view. Each run adds a new
+  `<HOSTNAME>_<UTC timestamp>Z.zip`. The folder is queued for deletion at the
+  next reboot.
 - **Footprint.** Writes the output folder, the zip and one
   `PendingFileRenameOperations` value; nothing is downloaded or installed.
   Queuing the deletion compiles a small helper (`Add-Type`), so `csc.exe`
@@ -77,7 +80,10 @@ timeline tooling.
 
 ## Quick start
 
-1. In the Defender portal, upload `collector.ps1` to the Live Response library.
+1. Download `collector.ps1` from the
+   [latest release](https://github.com/rbqbjyur/LiveResponsePSCollection/releases/latest),
+   check its SHA-256 against the release notes, and upload it to the Live
+   Response library in the Defender portal.
 2. Open a Live Response session on the device and run:
    ```
    run collector.ps1
@@ -268,10 +274,11 @@ getfile "C:\Windows\ServiceProfiles\NetworkService\NTUSER.DAT"
 
 Status meanings: **N collected** (copied into the zip), **Not accessible** (the
 file exists but could not be read), **Missing** (not present on this host).
-Browser History counts browser profiles, not files.
+Browser History counts browser profiles, not files; a profile counts as
+collected only if its history database was read (a locked database with
+readable journal or logs is *Not accessible*).
 
-## License
+## Licence
 
 [0BSD](LICENSE) (Zero-Clause BSD): use it for anything, no attribution
-required. Provided as is, with no warranty. Test it in your environment before
-relying on it in an investigation.
+required. Provided as is, with no warranty.
