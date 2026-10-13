@@ -26,8 +26,8 @@ timeline-relevant forensic artefacts (artifacts) - no binaries to upload.
   event logs. This script collects those raw, ready for your own parsers.
 
 It is a **lightweight, best-effort first pass**, for when all you have is a Live
-Response session. It uses ordinary file reads only, with **no Volume Shadow
-Copy and no raw disk access**. It copies what Windows lets it open and moves
+Response session. It uses ordinary file reads only, with **no raw disk access
+(no NTFS parser) and no Volume Shadow Copy**. It copies what Windows lets it open and moves
 on, so locked files and NTFS metafiles are not in the zip (see [What it can't collect](#what-it-cant-collect)).
 
 For a comprehensive collection, including locked files and raw NTFS
@@ -61,6 +61,12 @@ timeline tooling.
 - **Best effort.** Anything that can't be read is skipped and counted in the
   summary; the run never stops on an error, except a full system drive: it
   stops, deletes the partial zip and asks you to free space and re-run.
+- **Warnings.** Anything worth a closer look is listed in one Warnings
+  section: shown at the start if known by then, and again before the summary
+  (or "Warnings: none"). It covers unusual gaps (Missing or Not accessible
+  statuses without a note explaining them), not running as SYSTEM, a fallback
+  output folder, a zip over `getfile`'s 3 GB limit, cleanup that couldn't be
+  queued, and a full disk.
 - **Locked files.** Files are opened with shared read access, so in-use files
   are copied where Windows allows it. Files held exclusively are skipped (see
   [What it can't collect](#what-it-cant-collect)).
@@ -72,12 +78,14 @@ timeline tooling.
   `%SystemDrive%\ProgramData\Microsoft\Windows Defender Advanced Threat Protection\Temp\Collections\`,
   where Live Response also keeps its script transcripts. If that can't be
   written, it falls back to a `LiveResponseCollector` folder in
-  `%SystemRoot%\SystemTemp\` (newer Windows; SYSTEM and Administrators only),
-  then in the running account's temp folder (`C:\Windows\Temp\` for SYSTEM).
-  Only that last folder is ever created. Each run adds a new
-  `<HOSTNAME>_<UTC timestamp>Z.zip`, and the folder is queued for deletion at
-  the next reboot.
-- **Footprint.** Writes the output folder, the zip and one
+  `%SystemDrive%\Windows\SystemTemp\` (newer Windows; SYSTEM and Administrators
+  only), then in the running account's temp folder (`C:\Windows\Temp\` for
+  SYSTEM). Only the collector's own folder is created; a location whose parent
+  folder doesn't exist is skipped. Each run adds a new
+  `<HOSTNAME>_<UTC timestamp>Z.zip` and a `.log` of the same name with the
+  run's console output, and the folder is queued for deletion at the next
+  reboot.
+- **Footprint.** Writes the output folder, the zip, its log and one
   `PendingFileRenameOperations` value; nothing is downloaded or installed.
   Queuing the deletion compiles a small helper (`Add-Type`), so `csc.exe`
   runs: expect transient files in `%TEMP%` and Prefetch/Amcache entries for
@@ -98,13 +106,14 @@ timeline tooling.
    ```
    run collector.ps1
    ```
-3. When it finishes, it prints the zip's path. Retrieve it with the command it
-   gives you:
+3. When it finishes, it prints `getfile` commands for the zip and for the run
+   log (the console output):
    ```
    getfile "C:\ProgramData\Microsoft\Windows Defender Advanced Threat Protection\Temp\Collections\<HOSTNAME>_<yyyyMMdd_HHmmss>Z.zip"
+   getfile "C:\ProgramData\Microsoft\Windows Defender Advanced Threat Protection\Temp\Collections\<HOSTNAME>_<yyyyMMdd_HHmmss>Z.log"
    ```
 4. If it lists **Additional inaccessible artefacts**, those are files PowerShell
-   could not open (e.g. `$MFT`, `$LogFile`, locked hives). Copy and paste the
+   could not open (e.g. `$MFT`, locked hives). Copy and paste the
    printed `getfile` lines into the same session to retrieve them directly via
    the Defender sensor.
 
@@ -155,7 +164,7 @@ NTFS metafiles that open the summary are covered under
 | OneDrive Metadata | `<user>\AppData\Local\Microsoft\OneDrive\settings\` (recursive)<br>`<user>\AppData\Local\Microsoft\OneDrive\logs\` (recursive: `*.odl*`, `*.aodl`, `*.loggz`, `*.keystore`; not the `.etlgz` traces)<br>`<user>\AppData\Local\Microsoft\SkyDrive\logs\` (recursive; SkyDrive)<br>`<user>\AppData\Local\Microsoft\Windows\OneDrive\logs\` (recursive; Windows 8.1) |
 | PowerShell History | `<user>\AppData\Roaming\Microsoft\Windows\PowerShell\PSReadLine\*_history.txt`<br>`C:\Windows\{System32,SysWOW64}\config\systemprofile\AppData\Roaming\Microsoft\Windows\PowerShell\PSReadLine\*_history.txt` |
 | PowerShell Transcripts | `<user>\Documents\PowerShell_transcript.*.txt` and `<user>\Documents\20*\PowerShell_transcript.*.txt`<br>`<user>\OneDrive*\Documents\PowerShell_transcript.*.txt` and `...\Documents\20*\PowerShell_transcript.*.txt`<br>`C:\Windows\{System32,SysWOW64}\*\PowerShell_transcript.*.txt`<br>`C:\PSTranscript\20*\PowerShell_transcript.*.txt`<br>the policy transcription folder, if on a local drive (recursive) |
-| Recycle Bin ($I, INFO2) | `C:\$Recycle.Bin\<SID>\$I*`<br>`INFO2` under `C:\RECYCLE*\` (recursive; XP `RECYCLER`/`RECYCLED`) |
+| Recycle Bin | `C:\$Recycle.Bin\<SID>\$I*`<br>`INFO2` under `C:\RECYCLE*\` (recursive; XP `RECYCLER`/`RECYCLED`) |
 | Registry Hives (user) | `<user>\NTUSER.DAT`<br>`<user>\AppData\Local\Microsoft\Windows\UsrClass.dat`<br>`C:\Windows\System32\config\DEFAULT` (SYSTEM)<br>`<sysprof>\NTUSER.DAT`<br>`C:\Windows\ServiceProfiles\{LocalService,NetworkService}\NTUSER.DAT`<br>`C:\Windows.old\Windows\`, the same four service-account hives<br>each with its `.LOG1`/`.LOG2` |
 | Startup Folders | `C:\ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp\` (recursive)<br>`<user>\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\` (recursive) |
 | Teams Logs | `<user>\AppData\Local\Packages\MSTeams_8wekyb3d8bbwe\LocalCache\Microsoft\MSTeams\Logs\*`<br>`<user>\AppData\Local\Packages\MicrosoftTeams_8wekyb3d8bbwe\LocalCache\Microsoft\MSTeams\Logs\*` (Windows 11 built-in Teams)<br>`<user>\AppData\Roaming\Microsoft\Teams\logs.txt` (classic Teams) |
@@ -174,13 +183,13 @@ ready-to-paste `getfile` command at the end.
 | Artefact | Why | What it would take | Alternative |
 |---|---|---|---|
 | `$MFT` | NTFS metafile | NTFS parser | `getfile` (printed) |
-| `$LogFile` | NTFS metafile | NTFS parser | `getfile` (printed) |
+| `$LogFile` | NTFS metafile | NTFS parser | Not possible via `getfile` (reported as an empty file); Velociraptor Offline Collector |
 | `$UsnJrnl:$J` | NTFS metafile (alternate data stream) | NTFS parser | Not possible via `getfile`; Velociraptor Offline Collector |
 | System hives (`SAM`, `SECURITY`, `SOFTWARE`, `SYSTEM`) and their transaction logs | Held exclusively by the kernel while loaded | NTFS parser | `getfile` for the hives (printed) |
 | SRUM (`SRUDB.dat` and its ESE files) | Sometimes held open by the system (collected when it isn't) | NTFS parser | `getfile` (printed) |
-| Service account hives (`DEFAULT`, LocalService and NetworkService `NTUSER.DAT`) and their transaction logs | Loaded while Windows runs | NTFS parser | `getfile` for the hives (printed) |
+| Service account hives (`DEFAULT`, LocalService and NetworkService `NTUSER.DAT`) and their transaction logs | Loaded while Windows runs | NTFS parser | `getfile` manually (not printed) |
 | User Access Logging `Current.mdb` (servers) | Usually held open by the UAL service | NTFS parser | `getfile` (printed) |
-| User hives of logged-on users (`NTUSER.DAT`, `UsrClass.dat`) and their transaction logs | Held exclusively while the user is logged on | NTFS parser | `getfile` manually (not printed, to keep the list short) |
+| User hives of logged-on users (`NTUSER.DAT`, `UsrClass.dat`) and their transaction logs | Held exclusively while the user is logged on | NTFS parser | `getfile` for the hives (printed) |
 | `WebCacheV01.dat` of logged-on users | Usually held open in the user's session | NTFS parser | `getfile` manually (not printed) |
 
 Hives of users who are not logged on, and most other in-use files (EVTX, a
@@ -194,95 +203,76 @@ A Live Response run on a workstation; counts depend on the host.
 
 ```
 C:\> run collector.ps1
-Transcript started, output file is C:\ProgramData\Microsoft\Windows Defender Advanced Threat Protection\Temp\PSScriptOutputs\PSScript_Transcript_{3D5D5FE1-E341-4AC0-BBC3-59FD92F50B44}.txt
-Live Response collector v1.1.0
-Host WS042, started 2026-10-12T12:10:39Z
+Transcript started, output file is C:\ProgramData\Microsoft\Windows Defender Advanced Threat Protection\Temp\PSScriptOutputs\PSScript_Transcript_{00000000-0000-0000-0000-000000000000}.txt
+Live Response collector v1.2.0
+Host WS042, started 2026-10-13T11:08:13Z
 OS Microsoft Windows 11 Enterprise 24H2
 [01/31] Collecting $LogFile
 [02/31] Collecting $MFT
 [03/31] Collecting $UsnJrnl:$J
-[04/31] Collecting Application Compatibility
-[05/31] Collecting BITS
-[06/31] Collecting Defender Logs
-[07/31] Collecting Event Logs
-[08/31] Collecting Firewall Log
-[09/31] Collecting Group Policy
-[10/31] Collecting Prefetch
-[11/31] Collecting Registry Hives (system)
-[12/31] Collecting Restore Point Logs
-[13/31] Collecting SCCM Client Logs
-[14/31] Collecting Scheduled Tasks
-[15/31] Collecting SetupAPI
-[16/31] Collecting SRUM
-[17/31] Collecting User Access Logging (SUM)
-[18/31] Collecting Browser History
-[19/31] Collecting File History Catalogs
-[20/31] Collecting JumpLists
-[21/31] Collecting LNK
-[22/31] Collecting .NET CLR Usage Logs
-[23/31] Collecting OneDrive Metadata
-[24/31] Collecting PowerShell History
-[25/31] Collecting PowerShell Transcripts
-[26/31] Collecting Recycle Bin ($I, INFO2)
-[27/31] Collecting Registry Hives (user)
-[28/31] Collecting Startup Folders
-[29/31] Collecting Teams Logs
-[30/31] Collecting WER
+...
 [31/31] Collecting Windows Timeline
 
+Warnings:
+  - Unusual gaps: SCCM Client Logs (Missing); PowerShell Transcripts (Missing).
+
 Artefact summary:
-  $LogFile                  Not accessible                  (not unusual)
-  $MFT                      Not accessible                  (not unusual)
-  $UsnJrnl:$J               Not accessible                  (not unusual)
+  $LogFile                  Not accessible                  (requires NTFS parser)
+  $MFT                      Not accessible                  (requires NTFS parser)
+  $UsnJrnl:$J               Not accessible                  (requires NTFS parser)
   Application Compatibility 6 collected
   BITS                      10 collected
-  Defender Logs             32 collected
+  Defender Logs             30 collected
   Event Logs                437 collected
-  Firewall Log              Missing                         (not unusual)
-  Group Policy              Missing                         (not unusual)
-  Prefetch                  507 collected
-  Registry Hives (system)   Not accessible                  (not unusual)
-  Restore Point Logs        Missing                         (not unusual)
-  SCCM Client Logs          Missing                         (not unusual)
+  Firewall Log              Missing                         (off by default)
+  Group Policy              Missing                         (not joined to on-premises AD)
+  Prefetch                  288 collected
+  Registry Hives (system)   Not accessible                  (requires NTFS parser)
+  Restore Point Logs        Missing                         (not on this Windows version)
+  SCCM Client Logs          Missing
   Scheduled Tasks           316 collected
   SetupAPI                  12 collected
   SRUM                      18 collected
-  User Access Logging (SUM) Missing                         (not unusual)
-  Browser History           9 collected, 1 not accessible   (not unusual)
-  File History Catalogs     Missing                         (not unusual)
+  User Access Logging (SUM) Missing                         (Windows Server only)
+  Browser History           9 collected, 1 not accessible   (requires NTFS parser)
+  File History Catalogs     Missing                         (off by default)
   JumpLists                 48 collected
   LNK                       70 collected
   .NET CLR Usage Logs       2 collected
-  OneDrive Metadata         3795 collected
+  OneDrive Metadata         3814 collected
   PowerShell History        1 collected
-  PowerShell Transcripts    Missing                         (not unusual)
-  Recycle Bin ($I, INFO2)   6 collected
-  Registry Hives (user)     27 collected, 15 not accessible (not unusual)
+  PowerShell Transcripts    Missing
+  Recycle Bin               6 collected
+  Registry Hives (user)     27 collected, 15 not accessible (requires NTFS parser)
   Startup Folders           3 collected
-  Teams Logs                42 collected
+  Teams Logs                46 collected
   WER                       524 collected
   Windows Timeline          9 collected
 
-Collected 5902 files total (232.18 MB)
-Retrieve with: getfile "C:\ProgramData\Microsoft\Windows Defender Advanced Threat Protection\Temp\Collections\WS042_20261012_121039Z.zip"
+Collected 5704 files total (228.66 MB)
+Retrieve the zip with:
+getfile "C:\ProgramData\Microsoft\Windows Defender Advanced Threat Protection\Temp\Collections\WS042_20261013_110813Z.zip"
+Retrieve the run log with:
+getfile "C:\ProgramData\Microsoft\Windows Defender Advanced Threat Protection\Temp\Collections\WS042_20261013_110813Z.log"
 
 Additional inaccessible artefacts (locked from PowerShell - retrieve directly in this Live Response session):
-getfile "C:\$LogFile"
 getfile "C:\$MFT"
 getfile "C:\Windows\System32\config\SAM"
 getfile "C:\Windows\System32\config\SECURITY"
 getfile "C:\Windows\System32\config\SOFTWARE"
 getfile "C:\Windows\System32\config\SYSTEM"
-getfile "C:\Windows\System32\config\DEFAULT"
-getfile "C:\Windows\ServiceProfiles\LocalService\NTUSER.DAT"
-getfile "C:\Windows\ServiceProfiles\NetworkService\NTUSER.DAT"
+getfile "C:\Users\user01\NTUSER.DAT"
+getfile "C:\Users\user01\AppData\Local\Microsoft\Windows\UsrClass.dat"
 ```
 
 Status meanings: **N collected** (copied into the zip), **Not accessible** (the
 file exists but could not be read), **Missing** (not present on this host).
-**(not unusual)**, in its own column, marks a Missing or Not accessible status
-that is normal for this host (e.g. Prefetch on a server, legacy-only artefacts
-on current Windows, live registry hives), so unusual gaps stand out.
+A note in its own column explains a gap that is normal for this host: for
+Missing, the reason (e.g. "normal for Windows Server" for Prefetch, "not on
+this Windows version" for legacy-only artefacts); for files that are normally
+locked, **(requires NTFS parser)** (see
+[What it can't collect](#what-it-cant-collect)). Gaps without a note are listed
+under Warnings.
 Browser History counts browser profiles, not files; a profile counts as
 collected only if its history database was read (a locked database with
 readable journal or logs is *Not accessible*).

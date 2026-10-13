@@ -4,6 +4,27 @@ Notable changes to `collector.ps1`. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 1.2.0 - 2026-10-13
+
+### Added
+- Warnings section, shown at the start if known by then and again before the
+  summary: unusual gaps, not running as SYSTEM, fallback output folder, zip
+  over the 3 GB `getfile` limit, cleanup not queued, full disk.
+- Run log: the console output is also written to `<HOSTNAME>_<timestamp>Z.log`
+  beside the zip, with a `getfile` command for it at the end.
+
+### Changed
+- Summary notes now say why a gap is normal for the host, e.g. "(normal for
+  Windows Server)", "(not on this Windows version)", and "(requires NTFS
+  parser)" for normally locked files, instead of "(not unusual)".
+- "Recycle Bin ($I, INFO2)" renamed "Recycle Bin".
+- The `getfile` list now includes logged-on users' locked hives (`NTUSER.DAT`,
+  `UsrClass.dat`) instead of the built-in service accounts' hives.
+
+### Fixed
+- No `getfile` command is printed for `$LogFile`: Live Response rejects it as
+  an empty file.
+
 ## 1.1.0 - 2026-10-12
 
 ### Added
