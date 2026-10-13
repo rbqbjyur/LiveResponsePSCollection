@@ -35,7 +35,7 @@
     License: 0BSD.
 
 .LINK
-    https://github.com/rbqbjyur/LiveResponsePSCollection
+    https://github.com/rbqbjyur/defender-live-response-collector
 #>
 
 # Every catch {} in this script is deliberate: failures are skipped and the run
@@ -46,7 +46,7 @@ param()
 
 # ============================== CONFIG ==============================
 
-$CollectorVersion = '1.2.1'
+$CollectorVersion = '1.3.0'
 
 $ErrorActionPreference = 'SilentlyContinue'
 $ProgressPreference    = 'SilentlyContinue'
@@ -97,7 +97,13 @@ $gapReasons = @{
 # Artefacts to collect: one row per summary line. Add an artefact by adding a row.
 #   Name     Summary label.
 #   Group    1 = drive root (NTFS metafiles), 2 = other system files, 3 = user-specific.
-#   System   Path pattern(s) relative to the system drive.
+#   System   Path pattern(s) relative to the system drive (or to each drive, see
+#            Volumes).
+#   Volumes  Which drives the System patterns apply to: 'System' (the default; the
+#            system drive only), 'All' (every ready local drive - fixed or
+#            removable, any file system) or 'NTFS' (those formatted NTFS, for the
+#            NTFS metafiles, which FAT/exFAT have no file equivalent of). For
+#            per-volume artefacts such as the Recycle Bin.
 #   User     Path pattern(s) relative to each user profile.
 #   Logs     Also collect each match's registry transaction logs (<file>.LOG1/.LOG2).
 #   Literal  Use the path as-is, without listing it. For NTFS metafiles, which
@@ -137,9 +143,9 @@ $gapReasons = @{
 # this list doesn't matter - but keep it in that order for readability.
 $artefacts = @(
     # 1. Drive root: the timeline-relevant NTFS metafiles (the "NTFS Triforce").
-    @{ Name = '$LogFile';    Group = 1; ExpectLocked = { <# NTFS metafile #> $true }; Literal = $true; System = '$LogFile' }   # no getfile route (reported as empty)
-    @{ Name = '$MFT';        Group = 1; ExpectLocked = { <# NTFS metafile #> $true }; Literal = $true; GetFile = $true; System = '$MFT' }
-    @{ Name = '$UsnJrnl:$J'; Group = 1; ExpectLocked = { <# NTFS metafile #> $true }; Literal = $true; System = '$Extend\$UsnJrnl:$J' }   # no getfile route
+    @{ Name = '$LogFile';    Group = 1; Volumes = 'NTFS'; ExpectLocked = { <# NTFS metafile #> $true }; Literal = $true; System = '$LogFile' }   # no getfile route (reported as empty)
+    @{ Name = '$MFT';        Group = 1; Volumes = 'NTFS'; ExpectLocked = { <# NTFS metafile #> $true }; Literal = $true; GetFile = $true; System = '$MFT' }
+    @{ Name = '$UsnJrnl:$J'; Group = 1; Volumes = 'NTFS'; ExpectLocked = { <# NTFS metafile #> $true }; Literal = $true; System = '$Extend\$UsnJrnl:$J' }   # no getfile route
 
     # 2. Other system files.
     # Application compatibility / program execution records: Amcache.hve and the
@@ -381,8 +387,9 @@ $artefacts = @(
            @{ Key = 'HKLM:\SOFTWARE\Policies\Microsoft\PowerShellCore\Transcription';     Value = 'OutputDirectory'; Pattern = '**\PowerShell_transcript.*.txt' }
        ) }
     # Recycle Bin metadata only ($I records; INFO2 on XP), no deleted-file content.
-    @{ Name = 'Recycle Bin'; Group = 3; System = @(
+    @{ Name = 'Recycle Bin'; Group = 3; Volumes = 'All'; System = @(
         '$Recycle.Bin\*\$I*'
+        '$Recycle.Bin\$I*'                                               # FAT/exFAT: no per-SID folders
         'RECYCLE*\**\INFO2'                                              # XP (RECYCLER / RECYCLED)
     ) }
     # User hives, plus the service accounts' hives: DEFAULT is the SYSTEM account's
@@ -460,6 +467,30 @@ function Get-ListPath {
     return $Path
 }
 
+# A folder path with each folder name in its on-disk case (e.g. a pattern's
+# '$Recycle.Bin' is '$RECYCLE.BIN' on a FAT drive), so zip entries keep the
+# original paths. A name that can't be found is kept as given. Cached per path,
+# so each folder is looked up once.
+function Get-DiskCasePath {
+    param([string]$Path)
+    $Path = $Path.TrimEnd('\')
+    if ($script:caseCache.ContainsKey($Path)) { return $script:caseCache[$Path] }
+    $result = $Path
+    $cut = $Path.LastIndexOf('\')
+    if ($cut -gt 0) {
+        $parent = Get-DiskCasePath -Path $Path.Substring(0, $cut)
+        $name   = $Path.Substring($cut + 1)
+        $result = $parent + '\' + $name
+        try {
+            $match = Get-ChildItem -LiteralPath (Get-ListPath -Path $parent) -Filter $name -Force -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -eq $name } | Select-Object -First 1   # -eq: not a short-name (8.3) match
+            if ($match) { $result = $parent + '\' + $match.Name }
+        } catch {}
+    }
+    $script:caseCache[$Path] = $result
+    return $result
+}
+
 # A folder and every folder below it, never following links (see Test-FolderLink).
 function Get-DirectoryTree {
     param([string]$Path)
@@ -478,6 +509,7 @@ function Resolve-PathPattern {
 
     $base = $Root.TrimEnd('\')
     if ($Literal) { return ($base + '\' + $Pattern) }
+    $base = Get-DiskCasePath -Path $base
 
     $segments = $Pattern -split '\\'
     $dirs     = @($base)
@@ -487,7 +519,7 @@ function Resolve-PathPattern {
         elseif ($seg -match '[*?]') { $dirs = @(foreach ($d in $dirs) { Get-ChildDirectory -Path (Get-ListPath -Path $d) -Filter $seg }) }
         else {
             $dirs = @(foreach ($d in $dirs) {
-                $next = $d + '\' + $seg
+                $next = Get-DiskCasePath -Path ($d + '\' + $seg)
                 if (-not (Test-FolderLink -Path $next)) { $next }
             })
         }
@@ -559,6 +591,17 @@ function Get-ExpectedReason {
         if ($r -and (Test-Expectation -Condition $r.When)) { return $r.Why }
     }
     return $null
+}
+
+# Drive roots ('C:', 'D:') for a row's Volumes (see the artefact table): the
+# system drive only by default, every ready local drive ('All'), or those
+# formatted NTFS ('NTFS'). The system drive always comes first.
+function Get-VolumeRoot {
+    param([string]$Kind = 'System')
+    if ($Kind -ne 'All' -and $Kind -ne 'NTFS') { return $sysDrive }
+    foreach ($v in $script:volumes) {
+        if ($Kind -eq 'All' -or $v.Format -eq 'NTFS') { $v.Root }
+    }
 }
 
 # User profiles: every folder under each profile root, in $profileRoots order
@@ -691,7 +734,9 @@ function Add-Artefact {
     $units = @{}   # CountBy 'Folder': folder -> $true once any file in it was read
 
     $sources = @()
-    foreach ($p in $Artefact.System) { $sources += @{ Root = $sysDrive; Scope = 'System'; Pattern = $p } }
+    foreach ($root in (Get-VolumeRoot -Kind $Artefact.Volumes)) {
+        foreach ($p in $Artefact.System) { $sources += @{ Root = $root; Scope = 'System'; Pattern = $p } }
+    }
     foreach ($rd in $Artefact.RegDirs) {
         $dir = Get-RegistryValue -Path $rd.Key -Name $rd.Value
         # Absolute local drive paths only (any letter): skips shares and relative paths.
@@ -828,7 +873,11 @@ $script:logPath     = $null
 $script:logEncoding = New-Object System.Text.UTF8Encoding($false)
 
 # Banner first, before any status, so the version is the first thing printed.
+# The blank line above it is console-only, to set it off from Live Response's
+# transcript line; the run log starts with the banner.
+Write-Output ''
 Write-Line -Text "Live Response collector v$CollectorVersion"
+Write-Line -Text ''
 Write-Line -Text ("Host {0}, started {1}" -f $hostName, $runStart.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'"))
 $hostInfo = Get-HostInfo
 $osName   = @($hostInfo.Caption, $hostInfo.Version | Where-Object { $_ }) -join ' '
@@ -839,6 +888,7 @@ $script:added   = New-Object 'System.Collections.Generic.HashSet[string]' ([Stri
 $script:count   = 0                                                    # total files written to the zip
 $script:failed  = New-Object 'System.Collections.Generic.List[object]' # found but unreadable: Path, Scope, Literal, GetFile
 $script:linkCache = @{}                                                # folder path -> is a junction/symlink (Test-FolderLink)
+$script:caseCache = @{}                                                # folder path -> on-disk case (Get-DiskCasePath)
 $script:diskFull  = $false                                             # set when the system drive fills up (Test-DiskFull)
 $script:diskFullAt = ''                                                # artefact being collected when it did
 $script:summary = [ordered]@{}                                         # artefact name -> status, in display order
@@ -852,6 +902,28 @@ $artefacts = @($artefacts | Sort-Object -Property { $_.Group }, { $_.Name -repla
 foreach ($a in $artefacts) { $script:summary[$a.Name] = 'Missing' }
 $script:stageTotal = $artefacts.Count
 $script:stageNum   = 0
+
+# Local drives, for per-volume artefacts (Volumes = 'All' / 'NTFS'): every ready
+# drive except network ones - fixed and removable alike - with its file system,
+# the system drive first. Best effort: drives that aren't ready (no media,
+# locked) are simply skipped.
+$script:volumes = New-Object 'System.Collections.Generic.List[object]'
+try {
+    foreach ($d in [System.IO.DriveInfo]::GetDrives()) {
+        try {
+            if ($d.DriveType -eq [System.IO.DriveType]::Network -or
+                $d.DriveType -eq [System.IO.DriveType]::NoRootDirectory) { continue }
+            $root = $d.Name.TrimEnd('\')
+            if ($d.IsReady) { $script:volumes.Add([pscustomobject]@{ Root = $root; Format = $d.DriveFormat }) }
+        } catch {}
+    }
+} catch {}
+if (-not ($script:volumes | Where-Object { $_.Root -eq $sysDrive })) {
+    $script:volumes.Insert(0, [pscustomobject]@{ Root = $sysDrive; Format = 'NTFS' })   # never lose the system drive
+}
+$script:volumes = @($script:volumes | Sort-Object -Property { $_.Root -ne $sysDrive }, Root)
+# The drives searched, so a skipped drive can't pass for one with nothing on it.
+Write-Line -Text ('Drives ' + (@($script:volumes | ForEach-Object { '{0} ({1})' -f $_.Root, $_.Format }) -join ', '))
 
 try {
     Add-Type -AssemblyName System.IO.Compression
@@ -904,8 +976,8 @@ if ($outDir -ne $outDirs[0]) {
 if ($script:warnings.Count -gt 0) {
     Write-Line -Text ''
     Write-CollectorWarning
-    Write-Line -Text ''
 }
+Write-Line -Text ''
 
 try {
     $userProfiles = @(Get-UserProfilePath)

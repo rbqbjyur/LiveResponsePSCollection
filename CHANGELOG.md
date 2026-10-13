@@ -4,6 +4,18 @@ Notable changes to `collector.ps1`. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 1.3.0 - 2026-10-13
+
+### Added
+- Recycle Bin and NTFS metafiles are collected (or listed for `getfile`) from
+  every local drive - fixed or removable, NTFS, FAT or exFAT - not just the
+  system drive. Drives that can't be read are skipped.
+- A "Drives" line lists the drives searched and their file systems.
+
+### Changed
+- Zip entry paths keep each folder name's on-disk case (e.g. `$RECYCLE.BIN`),
+  not the case written in the artefact table.
+
 ## 1.2.1 - 2026-10-13
 
 ### Changed

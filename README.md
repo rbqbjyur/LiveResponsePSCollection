@@ -1,4 +1,4 @@
-# MDE Live Response Triage Collector
+# Defender Live Response Collector
 
 A single, self-contained PowerShell script for forensic triage collection
 through **Microsoft Defender for Endpoint (MDE) Live Response**. Upload it to
@@ -65,9 +65,8 @@ timeline tooling.
   section: shown at the start if known by then, and again before the summary
   (or "Warnings: none"). It covers unusual gaps (artefacts that should exist
   on this host but are missing, and unexplained locks), not running as
-  SYSTEM, a fallback
-  output folder, a zip over `getfile`'s 3 GB limit, cleanup that couldn't be
-  queued, and a full disk.
+  SYSTEM, a fallback output folder, a zip over `getfile`'s 3 GB limit, cleanup
+  that couldn't be queued, and a full disk.
 - **Locked files.** Files are opened with shared read access, so in-use files
   are copied where Windows allows it. Files held exclusively are skipped (see
   [What it can't collect](#what-it-cant-collect)).
@@ -100,7 +99,7 @@ timeline tooling.
 ## Quick start
 
 1. Download `collector.ps1` from the
-   [latest release](https://github.com/rbqbjyur/LiveResponsePSCollection/releases/latest),
+   [latest release](https://github.com/rbqbjyur/defender-live-response-collector/releases/latest),
    check its SHA-256 against the release notes, and upload it to the Live
    Response library in the Defender portal.
 2. Open a Live Response session on the device and run:
@@ -139,6 +138,10 @@ NTFS metafiles that open the summary are covered under
 - Junctions and symbolic links are not followed; on Windows they only point
   back to folders already covered.
 - Paths are resolved from `%SystemDrive%`, so non-`C:` installs work too.
+  Per-volume artefacts (Recycle Bin, and the NTFS metafiles under
+  [What it can't collect](#what-it-cant-collect)) are taken from every local
+  drive, fixed or removable (NTFS, FAT or exFAT), e.g. `C:`, `D:` and a USB
+  drive; network drives are not.
   Inside the zip, files keep their original path (e.g. `C/Windows/Prefetch/...`).
 
 | Artefact | Location |
@@ -165,7 +168,7 @@ NTFS metafiles that open the summary are covered under
 | OneDrive Metadata | `<user>\AppData\Local\Microsoft\OneDrive\settings\` (recursive)<br>`<user>\AppData\Local\Microsoft\OneDrive\logs\` (recursive: `*.odl*`, `*.aodl`, `*.loggz`, `*.keystore`; not the `.etlgz` traces)<br>`<user>\AppData\Local\Microsoft\SkyDrive\logs\` (recursive; SkyDrive)<br>`<user>\AppData\Local\Microsoft\Windows\OneDrive\logs\` (recursive; Windows 8.1) |
 | PowerShell History | `<user>\AppData\Roaming\Microsoft\Windows\PowerShell\PSReadLine\*_history.txt`<br>`C:\Windows\{System32,SysWOW64}\config\systemprofile\AppData\Roaming\Microsoft\Windows\PowerShell\PSReadLine\*_history.txt` |
 | PowerShell Transcripts | `<user>\Documents\PowerShell_transcript.*.txt` and `<user>\Documents\20*\PowerShell_transcript.*.txt`<br>`<user>\OneDrive*\Documents\PowerShell_transcript.*.txt` and `...\Documents\20*\PowerShell_transcript.*.txt`<br>`C:\Windows\{System32,SysWOW64}\*\PowerShell_transcript.*.txt`<br>`C:\PSTranscript\20*\PowerShell_transcript.*.txt`<br>the policy transcription folder, if on a local drive (recursive) |
-| Recycle Bin | `C:\$Recycle.Bin\<SID>\$I*`<br>`INFO2` under `C:\RECYCLE*\` (recursive; XP `RECYCLER`/`RECYCLED`) |
+| Recycle Bin | `<drive>\$Recycle.Bin\<SID>\$I*` on every local drive (FAT/exFAT: `<drive>\$Recycle.Bin\$I*`)<br>`INFO2` under `<drive>\RECYCLE*\` (recursive; XP `RECYCLER`/`RECYCLED`) |
 | Registry Hives (user) | `<user>\NTUSER.DAT`<br>`<user>\AppData\Local\Microsoft\Windows\UsrClass.dat`<br>`C:\Windows\System32\config\DEFAULT` (SYSTEM)<br>`<sysprof>\NTUSER.DAT`<br>`C:\Windows\ServiceProfiles\{LocalService,NetworkService}\NTUSER.DAT`<br>`C:\Windows.old\Windows\`, the same four service-account hives<br>each with its `.LOG1`/`.LOG2` |
 | Startup Folders | `C:\ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp\` (recursive)<br>`<user>\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\` (recursive) |
 | Teams Logs | `<user>\AppData\Local\Packages\MSTeams_8wekyb3d8bbwe\LocalCache\Microsoft\MSTeams\Logs\*`<br>`<user>\AppData\Local\Packages\MicrosoftTeams_8wekyb3d8bbwe\LocalCache\Microsoft\MSTeams\Logs\*` (Windows 11 built-in Teams)<br>`<user>\AppData\Roaming\Microsoft\Teams\logs.txt` (classic Teams) |
@@ -183,9 +186,10 @@ ready-to-paste `getfile` command at the end.
 
 | Artefact | Why | What it would take | Alternative |
 |---|---|---|---|
-| `$MFT` | NTFS metafile | NTFS parser | `getfile` (printed) |
-| `$LogFile` | NTFS metafile | NTFS parser | Not possible via `getfile` (reported as an empty file); Velociraptor Offline Collector |
-| `$UsnJrnl:$J` | NTFS metafile (alternate data stream) | NTFS parser | Not possible via `getfile`; Velociraptor Offline Collector |
+| `$MFT` (each NTFS drive) | NTFS metafile | NTFS parser | `getfile` (printed) |
+| `$LogFile` (each NTFS drive) | NTFS metafile | NTFS parser | Not possible via `getfile` (reported as an empty file); Velociraptor Offline Collector |
+| `$UsnJrnl:$J` (each NTFS drive) | NTFS metafile (alternate data stream) | NTFS parser | Not possible via `getfile`; Velociraptor Offline Collector |
+| File-system metadata of FAT and exFAT drives (allocation table, directory entries) | Not stored as files | FAT/exFAT parser | Not possible via `getfile`; a raw-disk collector |
 | System hives (`SAM`, `SECURITY`, `SOFTWARE`, `SYSTEM`) and their transaction logs | Held exclusively by the kernel while loaded | NTFS parser | `getfile` for the hives (printed) |
 | SRUM (`SRUDB.dat` and its ESE files) | Sometimes held open by the system (collected when it isn't) | NTFS parser | `getfile` (printed) |
 | Service account hives (`DEFAULT`, LocalService and NetworkService `NTUSER.DAT`) and their transaction logs | Loaded while Windows runs | NTFS parser | `getfile` manually (not printed) |
@@ -205,9 +209,13 @@ A Live Response run on a workstation; counts depend on the host.
 ```
 C:\> run collector.ps1
 Transcript started, output file is C:\ProgramData\Microsoft\Windows Defender Advanced Threat Protection\Temp\PSScriptOutputs\PSScript_Transcript_{00000000-0000-0000-0000-000000000000}.txt
-Live Response collector v1.2.1
+
+Live Response collector v1.3.0
+
 Host WS042, started 2026-10-13T11:08:13Z
 OS Microsoft Windows 11 Enterprise 24H2
+Drives C: (NTFS)
+
 [01/31] Collecting $LogFile
 [02/31] Collecting $MFT
 [03/31] Collecting $UsnJrnl:$J
