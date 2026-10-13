@@ -164,21 +164,24 @@ NTFS metafiles that open the summary are covered under
 
 ## What it can't collect
 
-Without VSS or raw disk access, some high-value artefacts cannot be read. They
-appear in the summary as *Not accessible*. Where the Defender sensor can fetch
-them, the script prints a ready-to-paste `getfile` command at the end.
+Some high-value artefacts cannot be read with ordinary file access. Full
+collectors such as the Velociraptor Offline Collector read them through raw
+volume access with their own NTFS parser, which is out of scope for a single
+script that uses only built-in tools. These artefacts appear in the summary as
+*Not accessible*. Where the Defender sensor can fetch them, the script prints a
+ready-to-paste `getfile` command at the end.
 
-| Artefact | Why | Retrieval |
-|---|---|---|
-| `$MFT` | NTFS metafile | `getfile` (printed) |
-| `$LogFile` | NTFS metafile | `getfile` (printed) |
-| `$UsnJrnl:$J` | NTFS metafile (ADS) | Not possible via `getfile`; needs a raw-NTFS collector |
-| System hives (`SAM`, `SECURITY`, `SOFTWARE`, `SYSTEM`) and their transaction logs | Held exclusively by the kernel while loaded | `getfile` for the hives (printed) |
-| SRUM (`SRUDB.dat` and its ESE files) | Sometimes held open by the system (collected when it isn't) | `getfile` (printed) |
-| Service account hives (`DEFAULT`, LocalService and NetworkService `NTUSER.DAT`) and their transaction logs | Loaded while Windows runs | `getfile` for the hives (printed) |
-| User Access Logging `Current.mdb` (servers) | Usually held open by the UAL service | `getfile` (printed) |
-| User hives of logged-on users (`NTUSER.DAT`, `UsrClass.dat`) and their transaction logs | Held exclusively while the user is logged on | `getfile` manually (not printed, to keep the list short) |
-| `WebCacheV01.dat` of logged-on users | Usually held open in the user's session | `getfile` manually (not printed) |
+| Artefact | Why | What it would take | Alternative |
+|---|---|---|---|
+| `$MFT` | NTFS metafile | NTFS parser | `getfile` (printed) |
+| `$LogFile` | NTFS metafile | NTFS parser | `getfile` (printed) |
+| `$UsnJrnl:$J` | NTFS metafile (alternate data stream) | NTFS parser | Not possible via `getfile`; Velociraptor Offline Collector |
+| System hives (`SAM`, `SECURITY`, `SOFTWARE`, `SYSTEM`) and their transaction logs | Held exclusively by the kernel while loaded | NTFS parser | `getfile` for the hives (printed) |
+| SRUM (`SRUDB.dat` and its ESE files) | Sometimes held open by the system (collected when it isn't) | NTFS parser | `getfile` (printed) |
+| Service account hives (`DEFAULT`, LocalService and NetworkService `NTUSER.DAT`) and their transaction logs | Loaded while Windows runs | NTFS parser | `getfile` for the hives (printed) |
+| User Access Logging `Current.mdb` (servers) | Usually held open by the UAL service | NTFS parser | `getfile` (printed) |
+| User hives of logged-on users (`NTUSER.DAT`, `UsrClass.dat`) and their transaction logs | Held exclusively while the user is logged on | NTFS parser | `getfile` manually (not printed, to keep the list short) |
+| `WebCacheV01.dat` of logged-on users | Usually held open in the user's session | NTFS parser | `getfile` manually (not printed) |
 
 Hives of users who are not logged on, and most other in-use files (EVTX, a
 running browser's History), are collected normally. If any other
