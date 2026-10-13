@@ -1,8 +1,9 @@
 # Defender Live Response Collector
 
 A single, self-contained PowerShell script for forensic triage collection
-through **Microsoft Defender for Endpoint (MDE) Live Response**. Upload it to
-the Live Response library, run it on a Windows device, and pull back one zip of
+(incident response / DFIR) through **Microsoft Defender for Endpoint (MDE)
+Live Response**. Upload it to the Live Response library, run it on a Windows
+device, and pull back one zip (split into 1 GiB volumes when larger) of
 timeline-relevant forensic artefacts (artifacts) - no binaries to upload.
 
 **The problem it solves:**
@@ -10,9 +11,9 @@ timeline-relevant forensic artefacts (artifacts) - no binaries to upload.
 - **`getfile` is one file at a time**, with no wildcards or folders. Pulling
   event logs, Prefetch, registry hives, LNK files, JumpLists and browser
   history for every user means hundreds of individual `getfile` commands. This
-  script gathers them into one zip in a single `run`, so you need one `getfile`
-  (plus a short, printed list of ready-to-paste commands for the few locked
-  files it can't read).
+  script gathers them into one zip in a single `run`, so you need one
+  `getfile` per zip volume (plus a short, printed list of ready-to-paste
+  commands for the few locked files it can't read).
 - **Full collectors need binaries and supporting files.** Staging KAPE or a
   Velociraptor collector through Live Response means uploading and running
   executables, which is not always possible or permitted. A multi-file toolkit
@@ -25,10 +26,11 @@ timeline-relevant forensic artefacts (artifacts) - no binaries to upload.
   registry hives, Amcache, SRUM, LNK files, JumpLists, browser history and most
   event logs. This script collects those raw, ready for your own parsers.
 
-It is a **lightweight, best-effort first pass**, for when all you have is a Live
-Response session. It uses ordinary file reads only, with **no raw disk access
-(no NTFS parser) and no Volume Shadow Copy**. It copies what Windows lets it open and moves
-on, so locked files and NTFS metafiles are not in the zip (see [What it can't collect](#what-it-cant-collect)).
+It is a **lightweight, best-effort first pass**, for when all you have is a
+Live Response session. It uses ordinary file reads only, with **no raw disk
+access (no NTFS parser) and no Volume Shadow Copy**. It copies what Windows lets
+it open and moves on, so locked files and NTFS metafiles are not in the zip
+(see [What it can't collect](#what-it-cant-collect)).
 
 For a comprehensive collection, including locked files and raw NTFS
 artefacts, use a full collector such as KAPE or the Velociraptor Offline
@@ -59,20 +61,26 @@ timeline tooling.
 
 - **Requirements:** Windows PowerShell 5.1.
 - **Best effort.** Anything that can't be read is skipped and counted in the
-  summary; the run never stops on an error, except a full system drive: it
-  stops, deletes the partial zip and asks you to free space and re-run.
+  summary; the run never stops on an error, except when the output can't be
+  completed (a full system drive, or a split that fails part-way): it then
+  deletes the partial output and asks you to run it again.
 - **Warnings.** Anything worth a closer look is listed in one Warnings
   section: shown at the start if known by then, and again before the summary
   (or "Warnings: none"). It covers unusual gaps (artefacts that should exist
   on this host but are missing, and unexplained locks), not running as
-  SYSTEM, a fallback output folder, a zip over `getfile`'s 3 GB limit, cleanup
-  that couldn't be queued, and a full disk.
+  SYSTEM, a fallback output folder, a zip that couldn't be split into
+  volumes, a file over `getfile`'s 3 GB limit, and a full disk.
 - **Locked files.** Files are opened with shared read access, so in-use files
   are copied where Windows allows it. Files held exclusively are skipped (see
   [What it can't collect](#what-it-cant-collect)).
 - **Single pass.** Files are streamed straight into the zip
   (`System.IO.Compression`, fastest compression) with no temporary copies.
   Zip entry times are each file's last-write time in UTC.
+- **Split volumes.** A zip over 1 GiB is split in place at the end into
+  standard split volumes, `<name>.zip.001`, `.002`, ... (a byte split of the
+  one zip, all but the last exactly 1 GiB): open `.001` in 7-Zip or
+  concatenate them. Splitting needs free space for one volume, not a second
+  copy. A zip up to 1 GiB stays a single `.zip`.
 - **Output location.** A `Collections` folder under the Defender for Endpoint
   sensor's own Temp folder,
   `%SystemDrive%\ProgramData\Microsoft\Windows Defender Advanced Threat Protection\Temp\Collections\`,
@@ -82,19 +90,17 @@ timeline tooling.
   only), then in the running account's temp folder (`C:\Windows\Temp\` for
   SYSTEM). Only the collector's own folder is created; a location whose parent
   folder doesn't exist is skipped. Each run adds a new
-  `<HOSTNAME>_<UTC timestamp>Z.zip` and a `.log` of the same name with the
-  run's console output, and the folder is queued for deletion at the next
-  reboot.
-- **Footprint.** Writes the output folder, the zip, its log and one
-  `PendingFileRenameOperations` value; nothing is downloaded or installed.
-  Queuing the deletion compiles a small helper (`Add-Type`), so `csc.exe`
-  runs: expect transient files in `%TEMP%` and Prefetch/Amcache entries for
-  `csc.exe` (and usually `cvtres.exe`).
+  `<HOSTNAME>_<UTC timestamp>Z.zip` (or its volumes) and a `.log` of the same
+  name with the run's console output. The collector doesn't delete its output.
+- **Footprint.** Writes the output folder, the zip (or its volumes) and its
+  log; nothing is downloaded or installed, and no child processes are
+  started.
 - **Live Response limits.** `getfile` retrieves up to 3 GB per file, and slow
-  links can time out first; `run` commands time out after 30 minutes. The
-  script doesn't split the zip or stop itself early. `getfile` may deliver a
-  file gzip-wrapped (`.gz`); the zip inside is unchanged, so decompress the
-  `.gz` first.
+  links can time out first; `run` commands time out after 30 minutes. Split
+  volumes keep each `getfile` well within its size and time limits; the
+  script doesn't stop itself early, so a `run` over 30 minutes times out.
+  `getfile` may deliver a file gzip-wrapped (`.gz`); the zip inside is
+  unchanged.
 
 ## Quick start
 
@@ -106,8 +112,8 @@ timeline tooling.
    ```
    run collector.ps1
    ```
-3. When it finishes, it prints `getfile` commands for the zip and for the run
-   log (the console output):
+3. When it finishes, it prints `getfile` commands for the zip (one per volume
+   if it was split) and for the run log (the console output):
    ```
    getfile "C:\ProgramData\Microsoft\Windows Defender Advanced Threat Protection\Temp\Collections\<HOSTNAME>_<yyyyMMdd_HHmmss>Z.zip"
    getfile "C:\ProgramData\Microsoft\Windows Defender Advanced Threat Protection\Temp\Collections\<HOSTNAME>_<yyyyMMdd_HHmmss>Z.log"
@@ -138,11 +144,11 @@ NTFS metafiles that open the summary are covered under
 - Junctions and symbolic links are not followed; on Windows they only point
   back to folders already covered.
 - Paths are resolved from `%SystemDrive%`, so non-`C:` installs work too.
-  Per-volume artefacts (Recycle Bin, and the NTFS metafiles under
+- Per-volume artefacts (Recycle Bin, and the NTFS metafiles under
   [What it can't collect](#what-it-cant-collect)) are taken from every local
   drive, fixed or removable (NTFS, FAT or exFAT), e.g. `C:`, `D:` and a USB
   drive; network drives are not.
-  Inside the zip, files keep their original path (e.g. `C/Windows/Prefetch/...`).
+- Inside the zip, files keep their original path (e.g. `C/Windows/Prefetch/...`).
 
 | Artefact | Location |
 |---|---|
@@ -210,7 +216,7 @@ A Live Response run on a workstation; counts depend on the host.
 C:\> run collector.ps1
 Transcript started, output file is C:\ProgramData\Microsoft\Windows Defender Advanced Threat Protection\Temp\PSScriptOutputs\PSScript_Transcript_{00000000-0000-0000-0000-000000000000}.txt
 
-Live Response collector v1.3.0
+Live Response collector v1.4.0
 
 Host WS042, started 2026-10-13T11:08:13Z
 OS Microsoft Windows 11 Enterprise 24H2

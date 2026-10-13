@@ -4,6 +4,16 @@ Notable changes to `collector.ps1`. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 1.4.0 - 2026-10-13
+
+### Added
+- A zip over 1 GiB is split in place into standard split volumes
+  (`.zip.001`, `.002`, ...), each retrieved with its own `getfile`.
+
+### Removed
+- Delete-at-reboot of the output folder. The collector starts no child
+  processes (`csc.exe` is no longer run).
+
 ## 1.3.0 - 2026-10-13
 
 ### Added

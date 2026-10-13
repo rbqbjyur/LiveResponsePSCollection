@@ -13,11 +13,13 @@
     Protection\Temp\Collections), falling back to a LiveResponseCollector folder
     in Windows\SystemTemp or the account's temp folder, and prints a
     per-artefact summary, the getfile command for the zip, and getfile commands
-    for locked machine-wide files it could not read.
+    for locked machine-wide files it could not read. A zip larger than the
+    part size set in CONFIG is split into standard split volumes
+    (<name>.zip.001, .002, ...).
 
     Best effort: anything that can't be read is skipped silently and counted in
-    the summary; the run never stops on an error. The output folder is queued
-    for deletion at the next reboot.
+    the summary; the run never stops on an error. No child processes are
+    started, and the output is left in place for retrieval.
 
 .EXAMPLE
     run collector.ps1
@@ -46,7 +48,7 @@ param()
 
 # ============================== CONFIG ==============================
 
-$CollectorVersion = '1.3.0'
+$CollectorVersion = '1.4.0'
 
 $ErrorActionPreference = 'SilentlyContinue'
 $ProgressPreference    = 'SilentlyContinue'
@@ -75,6 +77,12 @@ $outDirs = @(
     Join-Path ([System.IO.Path]::GetTempPath()) 'LiveResponseCollector'
 )
 $zipName = "${hostName}_${timestamp}.zip"
+
+# Largest output file. A bigger zip is split in place at the end into standard
+# split volumes - <name>.zip.001, .002, ... (a byte split of the one zip: join
+# them, or open .001 in 7-Zip) - so each getfile stays well within its 3 GB and
+# time limits. A zip that fits is left as it is.
+$zipPartSize = 1GB
 
 # Where user profiles live, relative to the system drive: modern first, then
 # legacy (XP). Each folder under a root is one profile (see Get-UserProfilePath).
@@ -811,38 +819,48 @@ function Add-Artefact {
     }
 }
 
-# --- Cleanup ---
+# --- Splitting ---
 
-# Queue the output folder for deletion at next boot: MoveFileEx with a null
-# destination + MOVEFILE_DELAY_UNTIL_REBOOT (0x4) appends to the
-# PendingFileRenameOperations registry value, processed in order at boot. Files go
-# first (a folder is only removed once empty); files an earlier run already queued
-# are skipped, so repeat runs don't pile up duplicates, while a file left behind
-# by an earlier failed cleanup is picked up again. The folder itself goes last.
-# Returns $true if the folder was queued (so the cleanup is in place), else $false.
-function Register-DeleteOnReboot {
-    param([string]$Folder)
+# Split a zip larger than PartSize, in place, into standard split volumes
+# <zip>.001, .002, ... and return their paths (just the zip if it fits). Works
+# from the end so the extra space needed is one part, never a second copy: the
+# last part is copied out and cut off the zip, and so on, and what is left
+# (the first part) is renamed to .001. On failure it throws, with
+# $script:splitDamaged set once the zip has been cut (it is then unusable).
+function Split-ZipFile {
+    param([string]$Path, [long]$PartSize)
+    $length = (Get-Item -LiteralPath $Path -Force).Length
+    if ($length -le $PartSize) { return $Path }
+    $count = [int][math]::Ceiling($length / $PartSize)
+    $parts = @(for ($i = 1; $i -le $count; $i++) { '{0}.{1:D3}' -f $Path, $i })
+    $zipStream = $null
     try {
-        if (-not ('LR.Native' -as [type])) {
-            Add-Type -Namespace LR -Name Native -ErrorAction Stop -MemberDefinition @'
-[System.Runtime.InteropServices.DllImport("kernel32.dll", CharSet=System.Runtime.InteropServices.CharSet.Unicode, SetLastError=true)]
-public static extern bool MoveFileEx(string lpExistingFileName, string lpNewFileName, int dwFlags);
-'@
-        }
-        $pending = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
-        try {
-            $key = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager'
-            foreach ($entry in (Get-ItemProperty -LiteralPath $key -Name PendingFileRenameOperations -ErrorAction Stop).PendingFileRenameOperations) {
-                if ($entry) { [void]$pending.Add($entry -replace '^\\\?\?\\', '') }
+        $zipStream = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+        for ($i = $count; $i -ge 2; $i--) {
+            $start = [long]($i - 1) * $PartSize
+            $out = $null
+            try {
+                $out = [System.IO.File]::Open($parts[$i - 1], [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+                $zipStream.Position = $start
+                $zipStream.CopyTo($out, 1MB)
+                $out.Flush()
+            } finally {
+                if ($out) { try { $out.Dispose() } catch {} }
             }
-        } catch {}
-        # [NullString]::Value, not $null: PowerShell turns $null into "" for a
-        # .NET string argument, and MoveFileEx only queues a delete for a true null.
-        Get-ChildItem -LiteralPath $Folder -Recurse -Force -File -ErrorAction SilentlyContinue |
-            Where-Object { -not $pending.Contains($_.FullName) } |
-            ForEach-Object { [LR.Native]::MoveFileEx($_.FullName, [NullString]::Value, 4) | Out-Null }
-        return [LR.Native]::MoveFileEx($Folder, [NullString]::Value, 4)
-    } catch { return $false }
+            $script:splitDamaged = $true
+            $zipStream.SetLength($start)
+        }
+    } finally {
+        if ($zipStream) { try { $zipStream.Dispose() } catch {} }
+    }
+    [System.IO.File]::Move($Path, $parts[0])
+    return $parts
+}
+
+# Remove output files; failures are ignored (the caller reports what is left).
+function Remove-OutputFile {
+    param([string[]]$Path)
+    foreach ($p in $Path) { try { Remove-Item -LiteralPath $p -Force -ErrorAction Stop } catch {} }
 }
 
 # --- Warnings ---
@@ -953,7 +971,7 @@ if (-not $zip) {
 }
 
 # Run log beside the zip, same name with .log: write what's been printed so far,
-# then Write-Line appends. Created now so the reboot cleanup queues it too.
+# then Write-Line appends.
 $logPath = [System.IO.Path]::ChangeExtension($zipPath, '.log')
 try {
     [System.IO.File]::WriteAllText($logPath, (($script:logLines | ForEach-Object { $_ + "`r`n" }) -join ''), $script:logEncoding)
@@ -992,25 +1010,49 @@ try {
 # Disk full: the zip is partial (and its index may not have been written), so it
 # is useless. Delete it, tell the analyst, and stop - they free space and re-run.
 if ($script:diskFull) {
-    try { Remove-Item -LiteralPath $zipPath -Force -ErrorAction Stop } catch {}
-    $null = Register-DeleteOnReboot -Folder $outDir
-    $zipFate = if (Test-Path -LiteralPath $zipPath) { 'could not be deleted; it is unusable and queued for deletion at reboot' } else { 'was deleted' }
+    Remove-OutputFile -Path $zipPath
+    $zipFate = if (Test-Path -LiteralPath $zipPath) { "could not be deleted and is unusable: $zipPath" } else { 'was deleted' }
     Add-CollectorWarning -Message "Collection stopped while collecting $($script:diskFullAt): $sysDrive is full. The partial zip $zipFate. Free up space on $sysDrive and run the collector again."
     Write-Line -Text ''
     Write-CollectorWarning
     return
 }
 
-# Fallback cleanup: the output folder and its zips are deleted at the next reboot.
-# getfile still works until then.
-if (-not (Register-DeleteOnReboot -Folder $outDir)) {
-    Add-CollectorWarning -Message "The output folder could not be queued for deletion at reboot: remove $outDir once the zip is retrieved."
-}
-
 $bytes = $null
 try { $bytes = (Get-Item -LiteralPath $zipPath -Force).Length } catch {}
-if ($bytes -gt 3GB) {
-    Add-CollectorWarning -Message ("The zip is {0} GB, over getfile's 3 GB per-file limit." -f [math]::Round($bytes / 1GB, 2))
+
+# Split a large zip into volumes. If it fails before the zip was cut, the whole
+# zip is kept (any volumes already written are removed); once cut, nothing usable
+# is left, so everything goes and the analyst runs again - as for a full disk.
+$outFiles = @($zipPath)
+$script:splitDamaged = $false
+try {
+    $outFiles = @(Split-ZipFile -Path $zipPath -PartSize $zipPartSize)
+} catch {
+    $reason = if (Test-DiskFull -ErrorRecord $_) { "$sysDrive is full" } else { $_.Exception.Message }
+    $written = @(for ($i = 1; $i -le 999; $i++) {
+        $v = '{0}.{1:D3}' -f $zipPath, $i
+        if (Test-Path -LiteralPath $v) { $v }
+    })
+    Remove-OutputFile -Path $written
+    if ($script:splitDamaged) {
+        Remove-OutputFile -Path $zipPath
+        $left = @(@($zipPath) + $written | Where-Object { Test-Path -LiteralPath $_ })
+        $fate = if ($left) { 'could not all be deleted and are unusable: ' + ($left -join '; ') } else { 'were deleted' }
+        Add-CollectorWarning -Message "Splitting the zip into volumes failed part-way ($reason). The zip and its volumes $fate. Run the collector again."
+        Write-Line -Text ''
+        Write-CollectorWarning
+        return
+    }
+    Add-CollectorWarning -Message "The zip could not be split into volumes ($reason) and was kept whole."
+}
+foreach ($f in $outFiles) {
+    try {
+        $size = (Get-Item -LiteralPath $f -Force).Length
+        if ($size -gt 3GB) {
+            Add-CollectorWarning -Message ("{0} is {1} GB, over getfile's 3 GB per-file limit." -f (Split-Path -Path $f -Leaf), [math]::Round($size / 1GB, 2))
+        }
+    } catch {}
 }
 
 # Unusual gaps (see Add-Artefact), in summary order - the ones worth a closer look.
@@ -1041,8 +1083,12 @@ Write-Line -Text ''
 Write-Line -Text "Collected $script:count files total$zipSize"
 # Labels on their own line and bare commands below (the paths are long and wrap),
 # so each command can be copied as-is.
-Write-Line -Text 'Retrieve the zip with:'
-Write-Line -Text "getfile `"$zipPath`""
+if ($outFiles.Count -gt 1) {
+    Write-Line -Text "Retrieve the zip, split into $($outFiles.Count) volumes, with:"
+} else {
+    Write-Line -Text 'Retrieve the zip with:'
+}
+foreach ($f in $outFiles) { Write-Line -Text "getfile `"$f`"" }
 if ($script:logPath) {
     Write-Line -Text 'Retrieve the run log with:'
     Write-Line -Text "getfile `"$($script:logPath)`""
