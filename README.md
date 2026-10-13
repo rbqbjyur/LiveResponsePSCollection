@@ -63,8 +63,9 @@ timeline tooling.
   stops, deletes the partial zip and asks you to free space and re-run.
 - **Warnings.** Anything worth a closer look is listed in one Warnings
   section: shown at the start if known by then, and again before the summary
-  (or "Warnings: none"). It covers unusual gaps (Missing or Not accessible
-  statuses without a note explaining them), not running as SYSTEM, a fallback
+  (or "Warnings: none"). It covers unusual gaps (artefacts that should exist
+  on this host but are missing, and unexplained locks), not running as
+  SYSTEM, a fallback
   output folder, a zip over `getfile`'s 3 GB limit, cleanup that couldn't be
   queued, and a full disk.
 - **Locked files.** Files are opened with shared read access, so in-use files
@@ -204,7 +205,7 @@ A Live Response run on a workstation; counts depend on the host.
 ```
 C:\> run collector.ps1
 Transcript started, output file is C:\ProgramData\Microsoft\Windows Defender Advanced Threat Protection\Temp\PSScriptOutputs\PSScript_Transcript_{00000000-0000-0000-0000-000000000000}.txt
-Live Response collector v1.2.0
+Live Response collector v1.2.1
 Host WS042, started 2026-10-13T11:08:13Z
 OS Microsoft Windows 11 Enterprise 24H2
 [01/31] Collecting $LogFile
@@ -213,8 +214,7 @@ OS Microsoft Windows 11 Enterprise 24H2
 ...
 [31/31] Collecting Windows Timeline
 
-Warnings:
-  - Unusual gaps: SCCM Client Logs (Missing); PowerShell Transcripts (Missing).
+Warnings: none
 
 Artefact summary:
   $LogFile                  Not accessible                  (requires NTFS parser)
@@ -271,8 +271,10 @@ A note in its own column explains a gap that is normal for this host: for
 Missing, the reason (e.g. "normal for Windows Server" for Prefetch, "not on
 this Windows version" for legacy-only artefacts); for files that are normally
 locked, **(requires NTFS parser)** (see
-[What it can't collect](#what-it-cant-collect)). Gaps without a note are listed
-under Warnings.
+[What it can't collect](#what-it-cant-collect)). A Missing status without a note
+is listed under Warnings only if the artefact should exist on this host (e.g.
+event logs, or Prefetch on a workstation); many artefacts may simply be absent
+(e.g. PowerShell transcripts) and are not warned about.
 Browser History counts browser profiles, not files; a profile counts as
 collected only if its history database was read (a locked database with
 readable journal or logs is *Not accessible*).

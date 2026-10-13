@@ -46,7 +46,7 @@ param()
 
 # ============================== CONFIG ==============================
 
-$CollectorVersion = '1.2.0'
+$CollectorVersion = '1.2.1'
 
 $ErrorActionPreference = 'SilentlyContinue'
 $ProgressPreference    = 'SilentlyContinue'
@@ -116,6 +116,10 @@ $gapReasons = @{
 #   ExpectMissing  Rules for when "Missing" is normal for this artefact: a list of
 #            @{ When = { condition on $hostInfo, see Get-HostInfo }; Why = <a reason
 #            from $gapReasons> }. The first rule that holds gives the note "(<Why>)".
+#   ExpectPresent  Condition under which this artefact should exist on the host,
+#            so a Missing status is unusual and listed under Warnings. Rows without
+#            it may be present or not (usage, configuration): Missing is shown, but
+#            not warned about.
 #   ExpectLocked  Condition under which "not accessible" is normal; the summary
 #            then notes "(requires <Requires>)". Unknown host facts never count as
 #            expected, so unusual gaps stand out (they go to Warnings).
@@ -142,7 +146,7 @@ $artefacts = @(
     # Program Compatibility Assistant files (Windows 11 22H2+), then their
     # predecessors - RecentFileCache.bcf (Windows 7) and Syscache.hve (Windows 7 /
     # Server 2008 R2), both replaced by Amcache.hve in Windows 8 - then Windows.old.
-    @{ Name = 'Application Compatibility'; Group = 2; Logs = $true
+    @{ Name = 'Application Compatibility'; Group = 2; ExpectPresent = { <# Amcache, or RecentFileCache on Windows 7 #> $true }; Logs = $true
        ExpectLocked = { <# Syscache.hve is a loaded hive before Windows 8 #> $hostInfo.Build -and $hostInfo.Build -lt 9200 }
        System = @(
            'Windows\AppCompat\Programs\Amcache.hve'
@@ -153,7 +157,7 @@ $artefacts = @(
            'Windows.old\Windows\AppCompat\Programs\RecentFileCache.bcf'
        ) }
     # BITS job database (qmgr.db) and its ESE logs: downloads and persistence.
-    @{ Name = 'BITS';          Group = 2; System = 'ProgramData\Microsoft\Network\Downloader\**\*' }
+    @{ Name = 'BITS';          Group = 2; ExpectPresent = { $true }; System = 'ProgramData\Microsoft\Network\Downloader\**\*' }
     # Defender text logs (MPLog etc.) and detection history; not the quarantine
     # (file content). Defender event logs are covered by Event Logs.
     @{ Name = 'Defender Logs'; Group = 2; System = @(
@@ -164,7 +168,7 @@ $artefacts = @(
         'ProgramData\Microsoft\Microsoft AntiMalware\Support\**\*'      # older Defender / SCEP
         'Windows.old\Windows\Temp\MpCmdRun.log'
     ) }
-    @{ Name = 'Event Logs'; Group = 2; System = @(
+    @{ Name = 'Event Logs'; Group = 2; ExpectPresent = { $true }; System = @(
         'Windows\System32\winevt\logs\*.evtx'
         'Windows\System32\config\*.evt'                                  # XP
         'Windows.old\Windows\System32\winevt\logs\*.evtx'
@@ -185,14 +189,14 @@ $artefacts = @(
            'Windows.old\Windows\System32\GroupPolicy\*\Scripts\**\*'
        )
        User = 'AppData\Local\Microsoft\Group Policy\History\**\*' }
-    @{ Name = 'Prefetch'; Group = 2; ExpectMissing = @(@{ When = { $hostInfo.Server }; Why = $gapReasons.Server }); System = @(
+    @{ Name = 'Prefetch'; Group = 2; ExpectPresent = { <# on by default on workstations #> $hostInfo.Server -eq $false }; ExpectMissing = @(@{ When = { $hostInfo.Server }; Why = $gapReasons.Server }); System = @(
         'Windows\Prefetch\*.pf'
         'Windows.old\Windows\Prefetch\*.pf'
     ) }
     # Transaction logs hold un-flushed changes, so Registry Explorer / RegRipper /
     # plaso can replay a dirty hive and recover the most recent entries. RegBack
     # copies are usually empty on current Windows, but older snapshots when present.
-    @{ Name = 'Registry Hives (system)'; Group = 2; ExpectLocked = { <# loaded hives #> $true }; Logs = $true; System = @(
+    @{ Name = 'Registry Hives (system)'; Group = 2; ExpectPresent = { $true }; ExpectLocked = { <# loaded hives #> $true }; Logs = $true; System = @(
         'Windows\System32\config\SAM'
         'Windows\System32\config\SECURITY'
         'Windows\System32\config\SOFTWARE'
@@ -218,7 +222,7 @@ $artefacts = @(
     # Configuration Manager (SCCM) client logs; only on ConfigMgr-managed hosts.
     @{ Name = 'SCCM Client Logs';   Group = 2; System = 'Windows\CCM\Logs\*' }
     # XML task definitions, plus PowerShell scheduled jobs (definitions and output).
-    @{ Name = 'Scheduled Tasks'; Group = 2
+    @{ Name = 'Scheduled Tasks'; Group = 2; ExpectPresent = { $true }
        System = @(
            'Windows\System32\Tasks\**\*'
            'Windows\SysWOW64\Tasks\**\*'
@@ -232,19 +236,19 @@ $artefacts = @(
        )
        User = 'AppData\Local\Microsoft\Windows\PowerShell\ScheduledJobs\**\*' }
     # Device/driver install logs.
-    @{ Name = 'SetupAPI'; Group = 2; System = @(
+    @{ Name = 'SetupAPI'; Group = 2; ExpectPresent = { $true }; System = @(
         'Windows\INF\setupapi*.log'
         'Windows\setupapi.log'                                           # XP
         'Windows.old\Windows\INF\setupapi*.log'
     ) }
     # SRUDB.dat plus its ESE logs and checkpoint, for dirty-database recovery.
-    @{ Name = 'SRUM'; Group = 2; ExpectMissing = @(@{ When = { $hostInfo.Server }; Why = $gapReasons.Server }; @{ When = { $hostInfo.Build -and $hostInfo.Build -lt 9200 }; Why = $gapReasons.WindowsVersion }); ExpectLocked = { <# often held open #> $true }; System = @(
+    @{ Name = 'SRUM'; Group = 2; ExpectPresent = { <# workstations, Windows 8+ #> $hostInfo.Server -eq $false -and $hostInfo.Build -ge 9200 }; ExpectMissing = @(@{ When = { $hostInfo.Server }; Why = $gapReasons.Server }; @{ When = { $hostInfo.Build -and $hostInfo.Build -lt 9200 }; Why = $gapReasons.WindowsVersion }); ExpectLocked = { <# often held open #> $true }; System = @(
         'Windows\System32\SRU\**\*'
         'Windows.old\Windows\System32\SRU\**\*'
     ) }
     # User Access Logging (Windows Server): clients and users per role, with first
     # and last access times. ESE databases plus their logs, needed to repair them.
-    @{ Name = 'User Access Logging (SUM)'; Group = 2; ExpectMissing = @(@{ When = { $hostInfo.Server -eq $false }; Why = $gapReasons.ServerOnly }); ExpectLocked = { <# Current.mdb held by the UAL service #> $true }; System = 'Windows\System32\LogFiles\Sum\**\*' }
+    @{ Name = 'User Access Logging (SUM)'; Group = 2; ExpectPresent = { <# on by default on Windows Server #> $hostInfo.Server }; ExpectMissing = @(@{ When = { $hostInfo.Server -eq $false }; Why = $gapReasons.ServerOnly }); ExpectLocked = { <# Current.mdb held by the UAL service #> $true }; System = 'Windows\System32\LogFiles\Sum\**\*' }
 
     # 3. User-specific. Service accounts (SYSTEM, LocalService, NetworkService) are
     # not user profiles; where they matter, their paths are listed under System.
@@ -383,7 +387,7 @@ $artefacts = @(
     ) }
     # User hives, plus the service accounts' hives: DEFAULT is the SYSTEM account's
     # (HKU\.DEFAULT / S-1-5-18), the others LocalService and NetworkService.
-    @{ Name = 'Registry Hives (user)'; Group = 3; ExpectLocked = { <# logged-on users' and service hives #> $true }; Logs = $true; FollowUp = 'User'   # users' hives, not the built-in service accounts'
+    @{ Name = 'Registry Hives (user)'; Group = 3; ExpectPresent = { $true }; ExpectLocked = { <# logged-on users' and service hives #> $true }; Logs = $true; FollowUp = 'User'   # users' hives, not the built-in service accounts'
        System = @(
            'Windows\System32\config\DEFAULT'
            'Windows\System32\config\systemprofile\NTUSER.DAT'
@@ -752,6 +756,14 @@ function Add-Artefact {
         $requires = if ($Artefact.Requires) { $Artefact.Requires } else { 'NTFS parser' }
         $script:notes[$Artefact.Name] = "(requires $requires)"
     }
+    # Unusual gaps for the Warnings section: an unexplained lock, or Missing where
+    # the artefact should exist on this host. Missing with no expectation either
+    # way (usage, configuration) is shown in the summary but not warned about.
+    if (-not $script:notes.ContainsKey($Artefact.Name) -and
+        (($status -like '*not accessible*') -or
+         ($status -eq 'Missing' -and (Test-Expectation -Condition $Artefact.ExpectPresent)))) {
+        [void]$script:unusual.Add($Artefact.Name)
+    }
 }
 
 # --- Cleanup ---
@@ -832,6 +844,7 @@ $script:diskFullAt = ''                                                # artefac
 $script:summary = [ordered]@{}                                         # artefact name -> status, in display order
 $script:notes   = @{}                                                  # artefact name -> summary note for a gap that's normal here
 $script:warnings = New-Object 'System.Collections.Generic.List[string]'     # Warnings section, in the order found
+$script:unusual  = New-Object 'System.Collections.Generic.HashSet[string]'  # artefacts whose gap is worth a closer look
 
 # Fix the run order once: group, then name ignoring non-alphanumerics. Collection,
 # progress numbering and the summary all follow it. Lines start as 'Missing'.
@@ -883,7 +896,7 @@ try {
     }
 } catch {}
 if ($null -eq $hostInfo.Build -or $null -eq $hostInfo.Server) {
-    Add-CollectorWarning -Message "Host details could not be fully determined: some summary notes on normal gaps may be missing."
+    Add-CollectorWarning -Message "Host details could not be fully determined: summary notes and missing-artefact warnings may be incomplete."
 }
 if ($outDir -ne $outDirs[0]) {
     Add-CollectorWarning -Message "Output written to a fallback folder ($outDir), not the Defender sensor's Temp\Collections."
@@ -928,11 +941,9 @@ if ($bytes -gt 3GB) {
     Add-CollectorWarning -Message ("The zip is {0} GB, over getfile's 3 GB per-file limit." -f [math]::Round($bytes / 1GB, 2))
 }
 
-# Unusual gaps: any Missing or (partly) not accessible artefact that isn't marked
-# with a note for this host - the ones worth a closer look.
+# Unusual gaps (see Add-Artefact), in summary order - the ones worth a closer look.
 $unusual = foreach ($name in $script:summary.Keys) {
-    $status = $script:summary[$name]
-    if (($status -eq 'Missing' -or $status -like '*not accessible*') -and -not $script:notes.ContainsKey($name)) { "$name ($status)" }
+    if ($script:unusual.Contains($name)) { "$name ($($script:summary[$name]))" }
 }
 if ($unusual) { Add-CollectorWarning -Message ('Unusual gaps: ' + (@($unusual) -join '; ') + '.') }
 

@@ -4,6 +4,13 @@ Notable changes to `collector.ps1`. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 1.2.1 - 2026-10-13
+
+### Changed
+- Warnings list a missing artefact only if it should exist on the host (e.g.
+  event logs, or Prefetch on a workstation), not artefacts that may simply be
+  absent, such as PowerShell transcripts.
+
 ## 1.2.0 - 2026-10-13
 
 ### Added
